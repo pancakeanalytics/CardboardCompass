@@ -11,7 +11,7 @@ import json
 st.set_page_config(page_title="Cardboard Bot", layout="wide")
 
 # Title and Banner
-st.image("https://pancakebreakfaststats.com/wp-content/uploads/2024/04/Untitled-design-5.png")
+st.image("https://pancakebreakfaststats.com/wp-content/uploads/2025/04/pa001.png")
 st.title("Cardboard Bot 🤖📦")
 st.markdown("""
 Cardboard Bot helps you explore the secondary market value of trading cards.
@@ -63,7 +63,7 @@ def parse_input_with_gpt(user_input, valid_categories, memory):
     )
 
     response = client.chat.completions.create(
-        model="gpt-4",
+        model="gpt-3.5-turbo",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_input}
@@ -87,7 +87,7 @@ def generate_summary_with_gpt(category, pct_change, trend_bucket, best_month):
     )
 
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model="gpt-4",
         messages=[
             {"role": "user", "content": summary_prompt}
         ]
