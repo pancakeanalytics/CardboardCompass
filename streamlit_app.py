@@ -11,7 +11,7 @@ import json
 st.set_page_config(page_title="Cardboard Bot", layout="wide")
 
 # Title and Banner
-st.image("https://yourwebsite.com/banner.png")
+st.image("https://pancakebreakfaststats.com/wp-content/uploads/2024/04/Untitled-design-5.png")
 st.title("Cardboard Bot 🤖📦")
 st.markdown("""
 Cardboard Bot helps you explore the secondary market value of trading cards.
@@ -25,7 +25,7 @@ client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 # Load data
 @st.cache_data
 def load_data():
-    url = "https://your-data-source.com/your-dataset.xlsx"
+    url = "https://pancakebreakfaststats.com/wp-content/uploads/2025/04/data_file_005.xlsx"
     df = pd.read_excel(url, engine="openpyxl")
     df['Month_Year'] = pd.to_datetime(df['Month'] + ' ' + df['Year'].astype(str))
     df = df.sort_values('Month_Year')
