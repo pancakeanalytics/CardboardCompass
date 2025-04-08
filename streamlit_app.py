@@ -20,7 +20,7 @@ All data is sourced from eBay, providing a broad look at card conditions and typ
 """)
 
 # OpenAI Key
-openai.api_key ="REMOVED_SECRET-MlMNVveLJioueNTFDQTxGOJ-WkR1uvWS6xdrBCIaRgNeM75Ws6d4smCJ0gjIT3BlbkFJL20xpqfCJTMp-eehv9ibWDkGU26pDc6e01d9HIPp7zCzvv4I8PDxdtMr7OyzalHlSIE0ZKaOUA"
+openai.api_key =st.secrets["OPENAI_API_KEY"]
 
 # Load data
 @st.cache_data
