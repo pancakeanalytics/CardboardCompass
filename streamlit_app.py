@@ -26,7 +26,7 @@ openai.api_key =st.secrets["OPENAI_API_KEY"]
 @st.cache_data
 def load_data():
     url = "https://pancakebreakfaststats.com/wp-content/uploads/2025/04/data_file_005.xlsx"
-    df = pd.read_csv(url)
+    df = pd.read_excel(url)
     df['Month_Year'] = pd.to_datetime(df['Month'] + ' ' + df['Year'].astype(str))
     df = df.sort_values('Month_Year')
     return df
