@@ -11,7 +11,7 @@ import json
 st.set_page_config(page_title="Cardboard Bot", layout="wide")
 
 # Title and Banner
-st.image("https://pancakebreakfaststats.com/wp-content/uploads/2024/04/Untitled-design-7.png")
+st.image("https://yourwebsite.com/banner.png")
 st.title("Cardboard Bot 🤖📦")
 st.markdown("""
 Cardboard Bot helps you explore the secondary market value of trading cards.
@@ -19,14 +19,14 @@ Analytics aren’t necessary to collect — but they’re here if you want to gr
 All data is sourced from eBay, providing a broad look at card conditions and types of collectors. Market value is weighted by the number of sellers each month.
 """)
 
-# OpenAI Key
-openai.api_key =st.secrets["OPENAI_API_KEY"]
+# OpenAI Client
+client = openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 # Load data
 @st.cache_data
 def load_data():
-    url = "https://pancakebreakfaststats.com/wp-content/uploads/2025/04/data_file_005.xlsx"
-    df = pd.read_excel(url)
+    url = "https://your-data-source.com/your-dataset.xlsx"
+    df = pd.read_excel(url, engine="openpyxl")
     df['Month_Year'] = pd.to_datetime(df['Month'] + ' ' + df['Year'].astype(str))
     df = df.sort_values('Month_Year')
     return df
@@ -62,13 +62,12 @@ def parse_input_with_gpt(user_input, valid_categories, memory):
         f"Prior context (for follow-up questions): {memory}"
     )
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4",
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_input}
-        ],
-        temperature=0.2
+        ]
     )
 
     try:
@@ -87,12 +86,11 @@ def generate_summary_with_gpt(category, pct_change, trend_bucket, best_month):
         "Give the collector some chill, smart insights about whether to buy now, wait, or hold. Include emojis and keep it casual."
     )
 
-    response = openai.ChatCompletion.create(
+    response = client.chat.completions.create(
         model="gpt-4",
         messages=[
             {"role": "user", "content": summary_prompt}
-        ],
-        temperature=0.8
+        ]
     )
 
     return response.choices[0].message.content
