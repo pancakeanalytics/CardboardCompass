@@ -152,6 +152,7 @@ if "selected_category" in st.session_state:
         st.chat_message("assistant").markdown(summary)
         del st.session_state.selected_category
 
-# Show history
+# Show history (excluding system messages)
 for msg in st.session_state.history:
-    st.chat_message(msg["role"]).markdown(msg["content"])
+    if msg["role"] != "system":
+        st.chat_message(msg["role"]).markdown(msg["content"])
