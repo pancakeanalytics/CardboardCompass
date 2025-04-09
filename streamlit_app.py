@@ -66,8 +66,20 @@ def get_gpt_response(messages):
 # Session state
 if "history" not in st.session_state:
     st.session_state.history = [
-        {"role": "system", "content": "You are Cardboard Bot 🤖📦, a helpful and fun trading card advisor. Start by greeting the user, ask what card category they're interested in (like Pokémon, Marvel, Baseball, etc.), then wait for them to respond. Once they tell you a category, confirm it back and ask if they want to run a market analysis (forecast, MACD, best buy time). Be casual and friendly with emojis! Also, if the user asks a general question about trading cards not in the data, do your best to answer based on your broad knowledge."},
-        {"role": "assistant", "content": "Hey there! 👋 I'm Cardboard Bot — ready to talk trading cards! What category are you curious about today? 🎴"}
+        {
+            "role": "system",
+            "content": (
+                "You are Cardboard Bot 🤖📦, a helpful and fun trading card advisor. Start by greeting the user, "
+                "ask what card category they're interested in (like Pokémon, Marvel, Baseball, etc.), then wait for them to respond. "
+                "Once they tell you a category, confirm it back and ask if they want to run a market analysis (forecast, MACD, best buy time). "
+                "Be casual and friendly with emojis! Also, if the user asks a general question about trading cards not in the data, "
+                "do your best to answer based on your broad knowledge."
+            )
+        },
+        {
+            "role": "assistant",
+            "content": "Hey there! 👋 I'm Cardboard Bot — ready to talk trading cards! What category are you curious about today? 🎴"
+        }
     ]
 
 # User input
@@ -87,7 +99,10 @@ if user_input:
     category_match = next((cat for cat in categories if cat.lower() in user_input.lower()), None)
     if category_match:
         with st.chat_message("assistant"):
-            st.markdown(f"Awesome choice! 🔍 Want me to run the full market analysis for **{category_match}** trading cards? Just say 'yes' or 'go for it' and I’m on it! 🧠📊")
+            st.markdown(
+                f"Awesome choice! 🔍 Want me to run the full market analysis for **{category_match}** trading cards? "
+                "Just say 'yes' or 'go for it' and I’m on it! 🧠📊"
+            )
         st.session_state.selected_category = category_match
 
 # Run full analysis if user says yes
@@ -145,14 +160,6 @@ if "selected_category" in st.session_state:
             f"- Best time to buy: {best_month}\n\n"
             "Give the collector some smart, casual advice about whether to buy, sell, or hold based on this data."
         )
-        summary = get_gpt_response([
-            {"role": "user", "content": summary_prompt}
-        ])
-
+        summary = get_gpt_response([{"role": "user", "content": summary_prompt}])
         st.chat_message("assistant").markdown(summary)
         del st.session_state.selected_category
-
-# Show history (excluding system messages)
-for msg in st.session_state.history:
-    if msg["role"] != "system":
-        st.chat_message(msg["role"]).markdown(msg["content"])
