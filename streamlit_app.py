@@ -31,9 +31,13 @@ def load_data():
     df = df.sort_values('Month_Year')
     return df
 
-df = load_data()
-categories = ['Fortnite', 'Marvel', 'Pokemon', 'Star Wars', 'Magic the Gathering', 'Baseball', 'Basketball', 'Football', 'Hockey', 'Soccer']
-df = df[df['Category'] != 'Lorcana']
+try:
+    df = load_data()
+    categories = ['Fortnite', 'Marvel', 'Pokemon', 'Star Wars', 'Magic the Gathering', 'Baseball', 'Basketball', 'Football', 'Hockey', 'Soccer']
+    df = df[df['Category'] != 'Lorcana']
+except:
+    df = pd.DataFrame()
+    categories = []
 
 # Forecasting and MACD Analysis Functions
 def run_holt_winters(data):
@@ -52,132 +56,102 @@ def calculate_macd(ts):
     diff = macd - signal
     return macd, signal, diff
 
-def parse_input_with_gpt(user_input, valid_categories, memory):
-    system_prompt = (
-        "You're a casual, friendly trading card expert. Given a user's question, return a JSON object with the structure:\n"
-        "{ 'categories': [valid_category_names], 'compare': true/false }\n"
-        "Only use category names from this list:\n"
-        f"{valid_categories}\n\n"
-        "Note: 'Marvel' means Marvel trading cards.\n"
-        f"Prior context (for follow-up questions): {memory}"
-    )
-
+def get_gpt_response(messages):
     response = client.chat.completions.create(
         model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_input}
-        ]
+        messages=messages
     )
-
-    try:
-        parsed = json.loads(response.choices[0].message.content)
-    except:
-        parsed = {"categories": [], "compare": False}
-
-    return parsed
-
-def generate_summary_with_gpt(category, pct_change, trend_bucket, best_month):
-    summary_prompt = (
-        f"Yo! Here's what I've got for {category} trading cards 📈:\n\n"
-        f"- Forecast change over the next 12 months: {pct_change:.2f}%\n"
-        f"- MACD trend: {trend_bucket}\n"
-        f"- Best time to snag deals: {best_month}\n\n"
-        "Give the collector some chill, smart insights about whether to buy now, wait, or hold. Include emojis and keep it casual."
-    )
-
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[
-            {"role": "user", "content": summary_prompt}
-        ]
-    )
-
     return response.choices[0].message.content
 
-# Chat memory setup
+# Session state
 if "history" not in st.session_state:
-    st.session_state.history = []
-if "chat_context" not in st.session_state:
-    st.session_state.chat_context = []
+    st.session_state.history = [
+        {"role": "system", "content": "You are Cardboard Bot 🤖📦, a helpful and fun trading card advisor. Start by greeting the user, ask what card category they're interested in (like Pokémon, Marvel, Baseball, etc.), then wait for them to respond. Once they tell you a category, confirm it back and ask if they want to run a market analysis (forecast, MACD, best buy time). Be casual and friendly with emojis! Also, if the user asks a general question about trading cards not in the data, do your best to answer based on your broad knowledge."},
+        {"role": "assistant", "content": "Hey there! 👋 I'm Cardboard Bot — ready to talk trading cards! What category are you curious about today? 🎴"}
+    ]
 
-# Chat input
-user_input = st.chat_input("Ask me about a trading card category or compare two (e.g., Compare Pokemon and Marvel)")
+# User input
+user_input = st.chat_input("Talk to Cardboard Bot…")
 
 if user_input:
-    st.session_state.history.append(("user", user_input))
-    st.chat_message("user").markdown(user_input)
+    st.session_state.history.append({"role": "user", "content": user_input})
+    with st.chat_message("user"):
+        st.markdown(user_input)
 
-    memory = " ".join([msg for role, msg in st.session_state.history if role == "user"])
-    parsed = parse_input_with_gpt(user_input, categories, memory)
-    matched_categories = parsed["categories"]
-    compare_mode = parsed["compare"]
+    reply = get_gpt_response(st.session_state.history)
+    st.session_state.history.append({"role": "assistant", "content": reply})
+    with st.chat_message("assistant"):
+        st.markdown(reply)
 
-    if not matched_categories:
-        reply = "😅 Oops! I couldn't find a valid category in that. Try something like 'Show me Pokemon trends'!"
-        st.session_state.history.append(("bot", reply))
-        st.chat_message("assistant").markdown(reply)
-    else:
-        selected_categories = matched_categories[:2] if compare_mode else [matched_categories[0]]
+    # Try to detect a valid category
+    category_match = next((cat for cat in categories if cat.lower() in user_input.lower()), None)
+    if category_match:
+        with st.chat_message("assistant"):
+            st.markdown(f"Awesome choice! 🔍 Want me to run the full market analysis for **{category_match}** trading cards? Just say 'yes' or 'go for it' and I’m on it! 🧠📊")
+        st.session_state.selected_category = category_match
 
-        for cat in selected_categories:
-            intro = f"🔍 Let’s dive into **{cat}** trading cards and see what the data’s sayin’..."
-            st.session_state.history.append(("bot", intro))
-            st.chat_message("assistant").markdown(intro)
+# Run full analysis if user says yes
+if "selected_category" in st.session_state:
+    if user_input and re.search(r"\b(yes|yeah|go for it|sure|run it)\b", user_input.lower()):
+        cat = st.session_state.selected_category
+        df_cat = df[df['Category'] == cat]
+        ts, forecast, conf = run_holt_winters(df_cat)
+        future_index = pd.date_range(start=ts.index[-1] + pd.offsets.MonthBegin(), periods=12, freq='MS')
 
-            df_cat = df[df['Category'] == cat]
-            ts, forecast, conf = run_holt_winters(df_cat)
-            future_index = pd.date_range(start=ts.index[-1] + pd.offsets.MonthBegin(), periods=12, freq='MS')
+        fig1, ax1 = plt.subplots()
+        ax1.plot(ts.index, ts, label='Actual')
+        ax1.plot(future_index, forecast, label='Forecast')
+        ax1.fill_between(future_index, forecast - conf, forecast + conf, alpha=0.3)
+        ax1.set_title(f'{cat} 12-Month Forecast')
+        ax1.legend()
+        st.pyplot(fig1)
 
-            fig1, ax1 = plt.subplots()
-            ax1.plot(ts.index, ts, label='Actual')
-            ax1.plot(future_index, forecast, label='Forecast')
-            ax1.fill_between(future_index, forecast - conf, forecast + conf, alpha=0.3)
-            ax1.set_title(f'{cat} 12-Month Forecast')
-            ax1.legend()
-            st.pyplot(fig1)
+        pct_change = ((forecast[-1] - ts[-1]) / ts[-1]) * 100
 
-            pct_change = ((forecast[-1] - ts[-1]) / ts[-1]) * 100
+        macd, signal, diff = calculate_macd(ts)
+        recent_trend = diff.iloc[-1]
 
-            macd, signal, diff = calculate_macd(ts)
-            recent_trend = diff.iloc[-1]
-
-            if recent_trend > 1:
-                trend_bucket = 'High Upward Trend 🚀'
-            elif recent_trend > 0.25:
-                trend_bucket = 'Medium Upward Trend 📈'
-            elif recent_trend > 0:
-                trend_bucket = 'Low Upward Trend ↗️'
-            elif recent_trend > -0.25:
-                trend_bucket = 'Low Downward Trend ↘️'
-            elif recent_trend > -1:
-                trend_bucket = 'Medium Downward Trend 📉'
-            else:
-                trend_bucket = 'High Downward Trend 🔻'
-
-            fig2, ax2 = plt.subplots()
-            ax2.plot(ts.index, macd, label='MACD')
-            ax2.plot(ts.index, signal, label='Signal')
-            ax2.fill_between(ts.index, diff, 0, where=(diff > 0), color='green', alpha=0.3)
-            ax2.fill_between(ts.index, diff, 0, where=(diff < 0), color='red', alpha=0.3)
-            ax2.set_title(f'{cat} MACD Trend')
-            ax2.legend()
-            st.pyplot(fig2)
-
-            best_month_df = df_cat.groupby('Month')['market_value'].mean().sort_values()
-            best_month = best_month_df.idxmin()
-            st.bar_chart(best_month_df)
-
-            summary = generate_summary_with_gpt(cat, pct_change, trend_bucket, best_month)
-            st.chat_message("assistant").markdown(summary)
-
-        if compare_mode:
-            final_text = f"📊 Between **{selected_categories[0]}** and **{selected_categories[1]}**, weigh those trends, MACD vibes, and best months — then pick your champion! 🏆"
+        if recent_trend > 1:
+            trend_bucket = 'High Upward Trend 🚀'
+        elif recent_trend > 0.25:
+            trend_bucket = 'Medium Upward Trend 📈'
+        elif recent_trend > 0:
+            trend_bucket = 'Low Upward Trend ↗️'
+        elif recent_trend > -0.25:
+            trend_bucket = 'Low Downward Trend ↘️'
+        elif recent_trend > -1:
+            trend_bucket = 'Medium Downward Trend 📉'
         else:
-            final_text = f"👍 That’s the scoop on **{selected_categories[0]}** trading cards! Wanna check out another set or compare a few? I got you."
+            trend_bucket = 'High Downward Trend 🔻'
 
-        st.chat_message("assistant").markdown(final_text)
+        fig2, ax2 = plt.subplots()
+        ax2.plot(ts.index, macd, label='MACD')
+        ax2.plot(ts.index, signal, label='Signal')
+        ax2.fill_between(ts.index, diff, 0, where=(diff > 0), color='green', alpha=0.3)
+        ax2.fill_between(ts.index, diff, 0, where=(diff < 0), color='red', alpha=0.3)
+        ax2.set_title(f'{cat} MACD Trend')
+        ax2.legend()
+        st.pyplot(fig2)
 
-# Show chat history
-for role, message in st.session_state.history:
-    st.chat_message(role).markdown(message)
+        best_month_df = df_cat.groupby('Month')['market_value'].mean().sort_values()
+        best_month = best_month_df.idxmin()
+        st.bar_chart(best_month_df)
+
+        # GPT-powered summary of all three
+        summary_prompt = (
+            f"Yo! Here's what I found for {cat} trading cards 📈:\n\n"
+            f"- Forecast change over 12 months: {pct_change:.2f}%\n"
+            f"- MACD trend: {trend_bucket}\n"
+            f"- Best time to buy: {best_month}\n\n"
+            "Give the collector some smart, casual advice about whether to buy, sell, or hold based on this data."
+        )
+        summary = get_gpt_response([
+            {"role": "user", "content": summary_prompt}
+        ])
+
+        st.chat_message("assistant").markdown(summary)
+        del st.session_state.selected_category
+
+# Show history
+for msg in st.session_state.history:
+    st.chat_message(msg["role"]).markdown(msg["content"])
