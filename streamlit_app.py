@@ -127,7 +127,7 @@ run_btn = st.button("Run Analysis")
 #  TABS
 # ─────────────────────────────────────────
 tab_analysis, tab_heatmap, tab_market = st.tabs(
-    ["Category Analysis - What's the current and future outlook?", "Current Market HeatMap - Time to Buy?", "State of Market - Year over Year and Rolling 3 Months"]
+    ["Category Analysis", "Current Market HeatMap", "State of Market"]
 )
 
 df_raw = None
