@@ -3,9 +3,10 @@ import pandas as pd
 import numpy as np
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import matplotlib.pyplot as plt
-from datetime import datetime
 
-# ----------  STATIC SETUP  --------------------------------------------------
+# ──────────────────────────────────────────────────
+#  HEADER
+# ──────────────────────────────────────────────────
 st.image(
     "https://pancakebreakfaststats.com/wp-content/uploads/2025/04/pa001.png",
     use_container_width=True
@@ -13,31 +14,19 @@ st.image(
 st.title("Cardboard Bot")
 
 st.markdown("""
-Cardboard Bot helps you navigate the market with insights powered by Pancake Analytics.
-Collecting doesn’t need analytics – but for those looking to expand their hobby knowledge,
-this app provides visual, predictive insights based on eBay data. Market value is weighted
-by the number of sellers per month to give a collector-centric view.
+Cardboard Bot helps you navigate the market with insights powered by **Pancake Analytics**.  
+Collecting doesn’t need analytics – but for those who want a deeper hobby read, this app
+turns eBay data into clear, visual insights.
 """)
 
-# Categories (Lorcana excluded per earlier spec)
+# ──────────────────────────────────────────────────
+#  CONSTANTS & HELPERS
+# ──────────────────────────────────────────────────
 CATEGORIES = [
     'Fortnite', 'Marvel', 'Pokemon', 'Star Wars', 'Magic the Gathering',
     'Baseball', 'Basketball', 'Football', 'Hockey', 'Soccer'
 ]
 
-# ----------  INPUTS  ---------------------------------------------------------
-category_1 = st.selectbox(
-    "Select your primary category",
-    [c for c in CATEGORIES if c != "Lorcana"]
-)
-category_2 = st.selectbox(
-    "Compare against another category (optional)",
-    ["None"] + [c for c in CATEGORIES if c not in ["Lorcana", category_1]]
-)
-
-run_analysis = st.button("Run Analysis")
-
-# ----------  HELPER FUNCTIONS  ----------------------------------------------
 def preprocess(df, category):
     d = df[df['Category'] == category].copy()
     d['Month_Year'] = pd.to_datetime(d['Month'] + ' ' + d['Year'].astype(str))
@@ -48,183 +37,182 @@ def preprocess(df, category):
 
 def forecast(df):
     model = ExponentialSmoothing(
-        df['market_value'],
-        trend='add',
-        seasonal='add',
-        seasonal_periods=12
+        df['market_value'], trend='add', seasonal='add', seasonal_periods=12
     ).fit()
-    forecast_values = model.forecast(12)
-    conf_int = 1.96 * np.std(model.resid)
-    upper = forecast_values + conf_int
-    lower = forecast_values - conf_int
-    forecast_dates = pd.date_range(
+    fcast = model.forecast(12)
+    ci = 1.96 * np.std(model.resid)
+    upper = fcast + ci
+    lower = fcast - ci
+    dates = pd.date_range(
         df['Month_Year'].iloc[-1] + pd.DateOffset(months=1),
         periods=12, freq='MS'
     )
-    forecast_df = pd.DataFrame({
-        'Date': forecast_dates,
-        'Forecast': forecast_values,
-        'Upper': upper,
-        'Lower': lower
-    })
-    return forecast_df, model
+    return pd.DataFrame({'Date': dates, 'Forecast': fcast,
+                         'Upper': upper, 'Lower': lower}), model
 
 def macd_analysis(df):
-    short_ema = df['market_value'].ewm(span=12, adjust=False).mean()
-    long_ema  = df['market_value'].ewm(span=26, adjust=False).mean()
-    macd  = short_ema - long_ema
+    short = df['market_value'].ewm(span=12, adjust=False).mean()
+    long  = df['market_value'].ewm(span=26, adjust=False).mean()
+    macd  = short - long
     signal = macd.ewm(span=9, adjust=False).mean()
     diff = macd - signal
-    df['MACD'] = macd
-    df['Signal'] = signal
     df['MACD_Trend'] = pd.cut(
         diff,
         bins=[-np.inf, -1.5, -0.5, 0, 0.5, 1.5, np.inf],
         labels=['High Down', 'Med Down', 'Low Down', 'Low Up', 'Med Up', 'High Up']
     )
-    return df[['Month_Year', 'MACD', 'Signal', 'MACD_Trend']]
+    return df[['Month_Year', 'MACD_Trend']]
 
 def best_month(df):
     df['Month'] = df['Month_Year'].dt.month_name()
     return df.groupby('Month')['market_value'].mean().sort_values()
 
-# ----------  BUY / SELL RULE MAP  -------------------------------------------
-rule_map = {
-    # Collector
+# Buy/Sell rule-of-thumb mapping
+RULES = {
     'collector': {
-        'High Up': ('No', 'Yes'),   'Med Up': ('No', 'Yes'),
-        'Low Up' : ('Yes','No'),    'Low Down': ('Yes','No'),
-        'Med Down': ('No','Yes'),   'High Down': ('Yes','No')
+        'High Up': ('No', 'Yes'),  'Med Up': ('No', 'Yes'),
+        'Low Up' : ('Yes','No'),   'Low Down': ('Yes','No'),
+        'Med Down':('No','Yes'),   'High Down':('Yes','No')
     },
-    # Flipper
     'flipper': {
-        'High Up': ('Yes','No'),    'Med Up': ('Yes','No'),
-        'Low Up' : ('Yes','No'),    'Low Down': ('No','Yes'),
-        'Med Down': ('No','Yes'),   'High Down': ('No','Yes')
+        'High Up': ('Yes','No'),   'Med Up': ('Yes','No'),
+        'Low Up' : ('Yes','No'),   'Low Down':('No','Yes'),
+        'Med Down':('No','Yes'),   'High Down':('No','Yes')
     },
-    # Investor
     'investor': {
-        'High Up': ('No','Yes'),    'Med Up': ('Yes','No'),
-        'Low Up' : ('Yes','No'),    'Low Down': ('No','Yes'),
-        'Med Down': ('No','Yes'),   'High Down': ('Yes','No')
+        'High Up': ('No','Yes'),   'Med Up': ('Yes','No'),
+        'Low Up' : ('Yes','No'),   'Low Down':('No','Yes'),
+        'Med Down':('No','Yes'),   'High Down':('Yes','No')
     }
 }
 
-# ----------  MAIN  -----------------------------------------------------------
-if run_analysis:
-    with st.spinner("Running analysis…"):
-        # Load data once
+# ──────────────────────────────────────────────────
+#  UI CONTROLS
+# ──────────────────────────────────────────────────
+category_1 = st.selectbox(
+    "Select your primary category",
+    CATEGORIES
+)
+
+category_2 = st.selectbox(
+    "Compare against another category (optional)",
+    ["None"] + [c for c in CATEGORIES if c != category_1]
+)
+
+run_btn = st.button("Run Analysis")
+
+# ──────────────────────────────────────────────────
+#  TABS (always visible)
+# ──────────────────────────────────────────────────
+tab_analysis, tab_heatmap = st.tabs(["Category Analysis", "Current Market HeatMap"])
+
+# Place-holder for data so both tabs can see it
+df_raw = None
+
+if run_btn:
+    with st.spinner("Loading & crunching numbers…"):
         DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2025/06/data_file_006.xlsx"
         df_raw = pd.read_excel(DATA_URL)
 
-        # Create two tabs
-        tab_analysis, tab_heatmap = st.tabs(["Category Analysis", "Market HeatMap"])
+# ──────────────────────────────────────────────────
+#  TAB 1  –  CATEGORY ANALYSIS
+# ──────────────────────────────────────────────────
+with tab_analysis:
+    if not run_btn:
+        st.info("Click **Run Analysis** to generate forecasts and trend charts.")
+    else:
+        def display_analytics(cat):
+            st.header(f"Analytics for {cat}")
 
-        # =====  TAB 1: PER-CATEGORY ANALYTICS (your existing logic)  ==========
-        with tab_analysis:
+            d = preprocess(df_raw, cat)
 
-            def display_analytics(category):
-                st.header(f"Analytics for {category}")
-                d = preprocess(df_raw, category)
+            # Forecast
+            f_df, _ = forecast(d)
+            pct_change = (f_df['Forecast'].iloc[-1] - d['market_value'].iloc[-1]) / d['market_value'].iloc[-1] * 100
 
-                # ----- Forecast plot -----
-                forecast_df, _ = forecast(d)
-                fig1, ax1 = plt.subplots()
-                ax1.plot(d['Month_Year'], d['market_value'], label='Historical')
-                ax1.plot(forecast_df['Date'], forecast_df['Forecast'], label='Forecast')
-                ax1.fill_between(forecast_df['Date'], forecast_df['Lower'], forecast_df['Upper'], alpha=0.2)
-                ax1.set_title(f"12-Month Forecast: {category}")
-                ax1.legend()
-                st.pyplot(fig1)
+            fig1, ax1 = plt.subplots()
+            ax1.plot(d['Month_Year'], d['market_value'], label='Historical')
+            ax1.plot(f_df['Date'], f_df['Forecast'], label='Forecast')
+            ax1.fill_between(f_df['Date'], f_df['Lower'], f_df['Upper'], alpha=0.2)
+            ax1.set_title("12-Month Forecast")
+            ax1.legend()
+            st.pyplot(fig1)
 
-                pct_change = ((forecast_df['Forecast'].iloc[-1] - d['market_value'].iloc[-1])
-                              / d['market_value'].iloc[-1]) * 100
-                st.markdown(f"**Forecasted % Change by {forecast_df['Date'].iloc[-1].strftime('%B %Y')}:** {pct_change:.2f}%")
+            st.markdown(f"**Projected change by {f_df['Date'].iloc[-1].strftime('%B %Y')}: {pct_change:.2f}%**")
 
-                # ----- MACD plot -----
-                macd_df = macd_analysis(d)
-                fig2, ax2 = plt.subplots()
-                ax2.plot(macd_df['Month_Year'], macd_df['MACD'], label='MACD')
-                ax2.plot(macd_df['Month_Year'], macd_df['Signal'], label='Signal')
-                ax2.set_title("MACD Trend")
-                ax2.legend()
-                st.pyplot(fig2)
+            # MACD
+            macd_df = macd_analysis(d)
+            bucket = macd_df['MACD_Trend'].iloc[-1]
+            st.markdown(f"**Current MACD Bucket:** {bucket}")
 
-                st.markdown(f"**Most Recent MACD Trend:** {macd_df['MACD_Trend'].iloc[-1]}")
+            fig2, ax2 = plt.subplots()
+            ax2.plot(macd_df['Month_Year'], macd_df['MACD_Trend'].astype(str))
+            ax2.set_title("MACD Bucket Over Time")
+            ax2.tick_params(axis='x', rotation=45)
+            st.pyplot(fig2)
 
-                # ----- Buying-month plot -----
-                best_buy = best_month(d)
-                fig3, ax3 = plt.subplots()
-                best_buy.plot(kind='bar', ax=ax3)
-                ax3.set_title("Average Market Value by Month")
-                st.pyplot(fig3)
+            # Seasonality
+            best = best_month(d)
+            st.markdown(f"**Best buying month:** {best.idxmin()} (avg value {best.min():.2f})")
 
-                st.markdown(f"**Best Time to Buy {category} Cards:** {best_buy.idxmin()} "
-                            f"(Lowest Avg Value: {best_buy.min():.2f})")
+            fig3, ax3 = plt.subplots()
+            best.plot(kind='bar', ax=ax3)
+            ax3.set_ylabel("Avg Market Value")
+            ax3.set_title("Average Market Value by Month")
+            st.pyplot(fig3)
 
-                # ----- Final read out -----
-                st.subheader("Final Read Out")
-                st.markdown(f"""
-                Based on our analytics:
-                - **Long-Term Forecast**: {pct_change:.2f}% change projected.
-                - **Short-Term Trend**: {macd_df['MACD_Trend'].iloc[-1]}.
-                - **Best Buying Month**: {best_buy.idxmin()}.
-
-                _This is not financial advice. This is an analytics read. Collecting is part science, part art._
-                """)
-
-            # Single or dual display
-            if category_2 == "None":
+        if category_2 == "None":
+            display_analytics(category_1)
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
                 display_analytics(category_1)
-            else:
-                col1, col2 = st.columns(2)
-                with col1:
-                    display_analytics(category_1)
-                with col2:
-                    display_analytics(category_2)
-                st.subheader("Comparison Read Out")
-                st.markdown("Comparison analytics based on forecast, MACD, and buying month shown above.")
+            with col2:
+                display_analytics(category_2)
 
-        # =====  TAB 2: MARKET HEATMAP  =======================================
-        with tab_heatmap:
-            st.header("MACD Market HeatMap (All Categories)")
+            st.subheader("Side-by-side comparison complete.")
 
-            heat_records = []
-            for cat in CATEGORIES:
-                d_cat = preprocess(df_raw, cat)
-                macd_cat = macd_analysis(d_cat)
-                bucket = macd_cat['MACD_Trend'].iloc[-1]
+# ──────────────────────────────────────────────────
+#  TAB 2  –  MARKET HEATMAP
+# ──────────────────────────────────────────────────
+with tab_heatmap:
+    if not run_btn:
+        st.info("Run the analysis to view the MACD market heat-map.")
+    else:
+        rows = []
+        for cat in CATEGORIES:
+            d = preprocess(df_raw, cat)
+            bucket = macd_analysis(d)['MACD_Trend'].iloc[-1]
 
-                buy_c, sell_c = rule_map['collector'][bucket]
-                buy_f, sell_f = rule_map['flipper'][bucket]
-                buy_i, sell_i = rule_map['investor'][bucket]
+            rows.append({
+                "Category"         : cat,
+                "MACD Bucket"      : bucket,
+                "Collector Buy?"   : RULES['collector'][bucket][0],
+                "Collector Sell?"  : RULES['collector'][bucket][1],
+                "Flipper Buy?"     : RULES['flipper'][bucket][0],
+                "Flipper Sell?"    : RULES['flipper'][bucket][1],
+                "Investor Buy?"    : RULES['investor'][bucket][0],
+                "Investor Sell?"   : RULES['investor'][bucket][1],
+            })
 
-                heat_records.append({
-                    'Category'        : cat,
-                    'MACD Bucket'     : bucket,
-                    'Collector Buy?'  : buy_c,
-                    'Collector Sell?' : sell_c,
-                    'Flipper Buy?'    : buy_f,
-                    'Flipper Sell?'   : sell_f,
-                    'Investor Buy?'   : buy_i,
-                    'Investor Sell?'  : sell_i
-                })
+        heat_df = pd.DataFrame(rows)
+        st.dataframe(heat_df, use_container_width=True)
 
-            heat_df = pd.DataFrame(heat_records)
-            st.dataframe(heat_df, use_container_width=True)
+        st.markdown("""
+        **How to read this table**
 
-            st.markdown("""
-            **How to use this table**
+        * **Buy = Yes** → favorable entry conditions for that persona.  
+        * **Sell = Yes** → consider trimming or flipping inventory.  
+        Mapping is based on Pancake Analytics’ MACD play-book.
+        """)
 
-            * **Buy = Yes** → favorable entry conditions for that persona.  
-            * **Sell = Yes** → consider trimming / flipping inventory.  
-            The mapping is derived from Pancake Analytics’ MACD play-book and is meant as a guide, not financial advice.
-            """)
-
-# ----------  FOOTER  ---------------------------------------------------------
+# ──────────────────────────────────────────────────
+#  FOOTER
+# ──────────────────────────────────────────────────
 st.markdown("""
 ---
 ### Thank You for Using Cardboard Bot
-Cardboard Bot is built by **Pancake Analytics LLC** to help collectors dive deeper into their hobby.  
-All data is sourced from eBay and analyzed for trends and opportunities.
+Built by **Pancake Analytics LLC** to help collectors dive deeper into their hobby.  
+All data is sourced from eBay and analyzed for trends and opportunities.  
+_This is an analytics read, not financial advice._
 """)
