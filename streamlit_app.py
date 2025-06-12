@@ -18,7 +18,7 @@ by the number of sellers per month to give a collector-centric view.
 """)
 
 # Category Selection
-categories = ['Fortnite', 'Marvel', 'Pokemon', 'Star Wars', 'Magic the Gathering', 'Baseball', 'Basketball', 'Football', 'Hockey', 'Soccer', 'Comics']
+categories = ['Fortnite', 'Marvel', 'Pokemon', 'Star Wars', 'Magic the Gathering', 'Baseball', 'Basketball', 'Football', 'Hockey', 'Soccer']
 category_1 = st.selectbox("Select your primary category", [cat for cat in categories if cat != "Lorcana"])
 category_2 = st.selectbox("Compare against another category (optional)", ["None"] + [cat for cat in categories if cat not in ["Lorcana", category_1]])
 
@@ -28,7 +28,7 @@ run_analysis = st.button("Run Analysis")
 if run_analysis:
     with st.spinner("Running analysis..."):
         # Load Data
-        data_url = "https://pancakebreakfaststats.com/wp-content/uploads/2025/04/data_file_005.xlsx"
+        data_url = "https://pancakebreakfaststats.com/wp-content/uploads/2025/06/data_file_006.xlsx"
         df = pd.read_excel(data_url)
 
         # Filter and preprocess
