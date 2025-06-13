@@ -8,16 +8,16 @@ import matplotlib.pyplot as plt
 #  HEADER
 # ─────────────────────────────────────────
 st.image(
-    "https://pancakebreakfaststats.com/wp-content/uploads/2025/04/pa001.png",
+    "https://pancakebreakfaststats.com/wp-content/uploads/2025/06/pa.png",
     use_container_width=True
 )
-st.title("Cardboard Bot")
+st.title("Cardboard Compass")
 
 st.markdown("""
-Cardboard Bot turns eBay sales data into clear, visual insights powered by **Pancake Analytics**.
+Cardboard Compass turns eBay sales data into clear, visual insights powered by **Pancake Analytics**.
 
-*The “market-index” shown is the average selling price of singles on eBay, **weighted by the
-number of sellers and total items sold**. Cardboard Bot surfaces **macro** trends—it won’t
+*The “market-index” shown is the average eBay selling price of singles, **weighted by the
+number of sellers and total items sold**. Cardboard Compass surfaces **macro** trends—it won’t
 give you the exact price of the card in your hand.*
 """)
 
@@ -137,7 +137,7 @@ if page == "Category Analysis":
             ax2.legend(); st.pyplot(fig2)
             st.markdown(
                 "**How to read** – MACD above Signal & 0 ⇒ upbeat momentum; below 0 ⇒ downtrend.\n\n"
-                "*Collector example:* MACD just crossed above zero on Marvel cards—grab key covers "
+                "*Collector example:* MACD just crossed above zero on Marvel cards—grab key cards "
                 "before the uptrend is obvious.*"
             )
 
@@ -162,7 +162,7 @@ if page == "Category Analysis":
             with c2: show_card(cat2)
 
 # ─────────────────────────────────────────
-#  PAGE 2 ▸ MARKET HEATMAP
+#  PAGE 2 ▸ MARKET HEATMAP (YES-cell shading)
 # ─────────────────────────────────────────
 elif page == "Market HeatMap":
     if df_raw is None:
@@ -180,21 +180,31 @@ elif page == "Market HeatMap":
                 "Investor Buy?":RULES["investor"][bucket][0],
                 "Investor Sell?":RULES["investor"][bucket][1]
             })
+
+        df_heat = pd.DataFrame(rows)
+        yes_cols = [c for c in df_heat.columns if c.endswith("?")]
+
+        def yes_green(val):
+            return "background-color:#c6f6d5" if str(val).strip().lower()=="yes" else ""
+
+        styled = df_heat.style.applymap(yes_green, subset=yes_cols)
+
         st.subheader("MACD Market HeatMap")
-        st.dataframe(pd.DataFrame(rows),use_container_width=True,height=350)
+        st.dataframe(styled, use_container_width=True, height=350)
+
         st.markdown("""
 **How to read**
 
-* **MACD Bucket** reflects momentum (High Up → High Down).  
-* Buy/Sell columns translate momentum into action cues for each persona.
+* **MACD Bucket** shows momentum (High Up → High Down).  
+* Green cells highlight suggested Buy/Sell actions.
 
-| Persona | Hold horizon | Goal | Collector-friendly tip |
-|---------|--------------|------|------------------------|
-| **Collector** | 1–5 yrs | Build PC cheaply | Look for **Collector Buy = Yes** to negotiate. |
-| **Flipper**   | Weeks-Months | Quick profit | Flip when **Flipper Sell = Yes**. |
-| **Investor**  | 6–18 mths | Ride trend | Enter on the first **Investor Buy = Yes**. |
+| Persona | Hold horizon | Goal | Quick tip |
+|---------|--------------|------|-----------|
+| **Collector** | 1–5 yrs | Build PC cheaply | Look for green “Buy” cells. |
+| **Flipper**   | Weeks–Months | Quick flips | Green “Sell” marks good exit points. |
+| **Investor**  | 6–18 mths | Ride trends | Enter when green “Buy” first appears. |
 
-*Collector example:* Marvel shows **Med Down & Collector Buy = Yes**—time to scoop Spidey inserts before the next Disney+ teaser.*
+*Collector example:* Marvel is “Med Down” with Collector Buy = **Yes** (highlighted green) — time to negotiate on Spidey slabs while prices soften.*
 """)
 
 # ─────────────────────────────────────────
@@ -217,8 +227,7 @@ elif page == "State of Market":
         st.pyplot(fig)
         st.markdown(
             "**How to read** – Two positives = heating; two negatives = cooling.\n\n"
-            "*Collector example:* Pokémon shows –8 % YoY but +9 % 3-Mo — prices were falling until "
-            "recently. Good chance to buy before the long-term trend flips positive.*"
+            "*Collector example:* Pokémon is −8 % YoY but +9 % 3-Mo — buy before next bull run.*"
         )
         st.dataframe(mkt.round(2),use_container_width=True)
 
@@ -230,7 +239,7 @@ elif page == "Custom Index Builder":
         st.info("Run the analysis first.")
     else:
         st.subheader("Custom Index Builder")
-        sel = st.multiselect("Categories in your index", CATEGORIES,
+        sel = st.multiselect("Categories", CATEGORIES,
                              default=["Pokemon","Magic the Gathering"])
         if not sel: st.warning("Pick at least one."); st.stop()
 
@@ -277,9 +286,8 @@ elif page == "Custom Index Builder":
         st.table(weights.mul(100).round(1).rename("Weight %"))
         st.table(perf)
         st.markdown(
-            "**How to read** – Blue line = your blend. Bar-charts show performance pace.\n\n"
-            "*Collector example:* If your blend (heavily Marvel) is -4 % YoY but Sports is +10 %, "
-            "consider adding a 20 % Sports weight to steady value growth.*"
+            "**How to read** – Blue line = your blend. Bars show long- & short-term pace.\n\n"
+            "*Collector example:* Your Marvel-heavy blend lags Sports by 10 % YoY — shift 15 % into Basketball to balance.*"
         )
 
 # ─────────────────────────────────────────
@@ -304,9 +312,8 @@ elif page == "Seasonality HeatMap":
         fig_h.colorbar(im,ax=ax_h,label="% change")
         st.pyplot(fig_h)
         st.markdown(
-            "**How to read** – Red = months that typically drop.\n\n"
-            "*Collector example:* Heat-map shows Marvel dips in November—hit Black-Friday sales "
-            "to fill run gaps.*"
+            "**How to read** – Red months = typical dips.\n\n"
+            "*Collector example:* Marvel is red in November — hit Black-Friday deals for CGC slabs.*"
         )
         st.dataframe(pct.round(2).fillna("—"),use_container_width=True,height=300)
 
@@ -326,9 +333,8 @@ elif page == "Rolling Volatility":
         ax_v.set_ylabel("CoV %"); ax_v.legend(); ax_v.set_title(f"{pick} – Volatility")
         st.pyplot(fig_v)
         st.markdown(
-            "**How to read** – Higher % = bigger price swings.\n\n"
-            "*Collector example:* Volatility on Soccer just spiked—hold off on premium rookies "
-            "until the swings calm down.*"
+            "**How to read** – Higher % = bigger swings.\n\n"
+            "*Collector example:* Soccer volatility spiked — hold off on high-grade rookies until prices settle.*"
         )
 
 # ─────────────────────────────────────────
@@ -349,9 +355,8 @@ elif page == "Correlation Matrix":
         ax_c.set_yticks(range(len(CATEGORIES))); ax_c.set_yticklabels(CATEGORIES)
         fig_c.colorbar(im,ax=ax_c,label="ρ"); st.pyplot(fig_c)
         st.markdown(
-            "**How to read** – Green ≈ +1 = move together; red ≈ −1 = move opposite.\n\n"
-            "*Collector example:* Marvel correlation ~0 to Baseball means a Baseball dip "
-            "won’t tank your Marvel slabs—nice diversification.*"
+            "**How to read** – Green ≈ +1 = move together; red ≈ −1 = opposite.\n\n"
+            "*Collector example:* Marvel’s near-zero correlation with Baseball means a downturn in Topps Chrome won’t drag down your Spidey collection.*"
         )
         st.dataframe(corr.round(2),use_container_width=True,height=300)
 
@@ -360,6 +365,6 @@ elif page == "Correlation Matrix":
 # ─────────────────────────────────────────
 st.markdown("""
 ---
-### Thank You for Using Cardboard Bot  
+### Thank You for Using Cardboard Compass  
 Built by **Pancake Analytics LLC** – _analytics read, not financial advice._
 """)
