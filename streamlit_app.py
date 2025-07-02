@@ -124,8 +124,8 @@ if page == "Category Analysis":
             st.pyplot(fig)
             st.markdown(
                 "**How to read** – Blue = history, orange = forecast, shaded band = ±1.96σ.\n\n"
-                f"*Collector example:* Forecast shows **{pct:+.1f}%** upside for {cat}. "
-                "If you’re missing a flagship rookie, locking it in now beats buying next year.*"
+                f"*Collector example:* Forecast shows **{pct:+.1f}%** change for {cat}. "
+                "This value is a projection for the next 12 calendar months.*"
             )
 
             # MACD Trend
