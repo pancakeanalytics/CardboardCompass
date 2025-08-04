@@ -96,7 +96,7 @@ def yoy_3mo(series, latest):
 # ─────────────────────────────────────────
 PAGES = ["Category Analysis","Market HeatMap","State of Market",
          "Custom Index Builder","Seasonality HeatMap",
-         "Rolling Volatility","Correlation Matrix"]
+         "Rolling Volatility","Correlation Matrix","Flip Forecast"]
 
 with st.sidebar:
     page = st.selectbox("Choose an analysis", PAGES)
@@ -361,6 +361,146 @@ elif page == "Correlation Matrix":
         st.dataframe(corr.round(2),use_container_width=True,height=300)
 
 # ─────────────────────────────────────────
+# ─────────────────────────────────────────
+#  FLIP FORECAST MODULE (Formerly Monte Carlo)
+# ─────────────────────────────────────────
+if page == "Flip Forecast":
+    if df_raw is None:
+        st.info("Run the analysis first to enable Flip Forecast.")
+    else:
+        st.subheader("🔄 Flip Forecast – Projecting Future Card Value")
+
+        st.markdown("""
+        **Why it's called Flip Forecast**
+
+        This tool was inspired by two things collectors love: flipping cards and flipping pancakes.
+        It's called **Flip Forecast** because it helps you explore the possible future sale values of your card —
+        whether you're holding or looking for the perfect flip opportunity.
+
+        The model behind this tool is a **Monte Carlo simulation** — a method that simulates hundreds or thousands of
+        possible price paths based on historical trends, volatility, and seasonality. Think of it like pressure-testing
+        your future: how often will your card hit your target sale price?
+
+        Originally showcased and pressure tested at **Tampa Bay Comic Convention 2025**, the Flip Forecast was
+        met with positive feedback from collectors. Based on that feedback, this simulation has been expanded to
+        cover **all categories**, not just Pokémon, and is now available in the full production version of Cardboard Compass.
+        """)
+
+        # User selects category
+        sim_category = st.selectbox("Choose Category for Forecast", CATEGORIES, index=CATEGORIES.index(cat1))
+
+        # Preprocess selected category
+        d = preprocess(df_raw, sim_category)
+        d = d.sort_values("Month_Year")
+        d["pct_change"] = d["market_value"].pct_change()
+        d = d.dropna()
+
+        # Calculate expected return and capped volatility
+        expected_return = d["pct_change"].mean()
+        monthly_volatility = min(max(d["pct_change"].std(), 0.01), 0.30)
+
+        # Get seasonality pattern
+        d["Month"] = d["Month_Year"].dt.strftime("%B")
+        month_avg = d.groupby("Month")["market_value"].mean()
+        seasonality = month_avg / month_avg.mean()
+        month_order = ["January","February","March","April","May","June",
+                       "July","August","September","October","November","December"]
+        seasonality = seasonality.reindex(month_order).fillna(1)
+
+        # User inputs
+        st.markdown("---")
+        st.markdown("#### Your Card Details")
+        asking_price = st.number_input("Your Asking Price ($)", min_value=0.0, value=100.0, step=1.0)
+        purchase_price = st.number_input("Your Purchase Price ($)", min_value=0.0, value=75.0, step=1.0)
+        avg_3mo_price = st.number_input("Average Market Price Over Last 3 Months ($)", min_value=0.0, value=85.0, step=1.0)
+
+        st.markdown("#### Simulation Settings")
+        num_months = 12
+        num_simulations = st.slider("Number of Simulations", 100, 100000, 500, step=100)
+
+        initial_price = d["market_value"].iloc[-1]
+        st.write(f"Latest Market Value for {sim_category}: ${initial_price:.2f}")
+
+        # Flip Forecast Simulation
+        results = []
+        for i in range(num_simulations):
+            prices = [initial_price]
+            for m in range(num_months):
+                seasonal_adj = seasonality.iloc[m % 12]
+                rand_return = np.random.normal(expected_return, monthly_volatility)
+                next_price = prices[-1] * (1 + rand_return * seasonal_adj)
+                prices.append(next_price)
+            results.append(prices)
+
+        results = np.array(results)
+
+        # Plot simulated paths
+        st.markdown("---")
+        st.markdown("#### Simulated Price Paths")
+        fig, ax = plt.subplots(figsize=(10,5))
+        for r in results[:100]:
+            ax.plot(range(num_months+1), r, alpha=0.2, color="blue")
+        ax.set_title(f"Flip Forecast – {sim_category} ({num_simulations} runs)")
+        ax.set_xlabel("Months Ahead")
+        ax.set_ylabel("Simulated Price ($)")
+        st.pyplot(fig)
+        st.markdown("**How to read** – Each line represents a possible price path for your card over 12 months. The wide spread illustrates market uncertainty and seasonality.")
+
+        # Histogram of ending values
+        st.markdown("---")
+        st.markdown("#### Ending Price Distribution")
+        final_prices = results[:, -1]
+        fig2, ax2 = plt.subplots()
+        ax2.hist(final_prices, bins=30, color="purple", alpha=0.7)
+        ax2.axvline(np.median(final_prices), color="black", linestyle="--", label="Median")
+        ax2.axvline(asking_price, color="red", linestyle=":", label="Your Asking Price")
+        ax2.set_title("Distribution of Final Prices")
+        ax2.set_xlabel("Price")
+        ax2.legend()
+        st.pyplot(fig2)
+        st.markdown("**How to read** – The histogram shows the distribution of final prices after 12 months. The red line shows your asking price; the black dashed line is the median outcome.")
+
+        # Probability of hitting asking price
+        prob_hit_ask = np.mean(final_prices >= asking_price) * 100
+
+        # ROI by percentile
+        percentiles = [5, 25, 50, 75, 95]
+        roi_dict = {
+            f"{p}th Percentile Price": np.percentile(final_prices, p) for p in percentiles
+        }
+        roi_calc = {
+            f"ROI at {p}th %": f"{(roi_dict[f'{p}th Percentile Price'] - purchase_price) / purchase_price:.2%}"
+            for p in percentiles
+        }
+
+        # Stats summary
+        st.markdown("---")
+        st.markdown("#### Summary Statistics")
+        st.write({
+            "Selected Category": sim_category,
+            "Starting Price": f"${initial_price:.2f}",
+            "Expected Return": f"{expected_return:.2%}",
+            "Monthly Volatility (Capped)": f"{monthly_volatility:.2%}",
+            "Probability Your Asking Price is Hit": f"{prob_hit_ask:.1f}%",
+            **roi_dict,
+            **roi_calc
+        })
+
+        st.markdown(
+            f"""
+            **Category Read – {sim_category}:**
+            Over the past year, {sim_category} cards have shown an average monthly growth of **{expected_return:.2%}**, 
+            with monthly volatility capped at **{monthly_volatility:.2%}**. Seasonality plays a role, with some months
+            historically outperforming others.
+
+            **Collector Insight:** Based on {num_simulations} simulations, there's a **{prob_hit_ask:.1f}%** chance
+            your card reaches or exceeds your asking price of **${asking_price:.2f}** within 12 months.
+
+            Understanding ROI potential at different outcomes helps you better price, time, and position your sale.
+            """
+        )
+
+
 #  FOOTER
 # ─────────────────────────────────────────
 st.markdown("""
