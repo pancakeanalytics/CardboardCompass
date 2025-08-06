@@ -407,19 +407,27 @@ if page == "Flip Forecast":
                        "July","August","September","October","November","December"]
         seasonality = seasonality.reindex(month_order).fillna(1)
 
+        # Compute the real 3-month average from data
+        real_3mo_avg= d["market_value"].tail(3).mean()
+        latest_market_value = d["market_value"].iloc[-1]
+
+        # Display current market value and 3mo avg for transparency
+        st.write(f"Latest Market Value for {sim_category}: ${latest_market_value:.2f}")
+        st.write(f"Computed 3-Month Average: ${real_3mo_avg:.2f}")
+
         # User inputs
         st.markdown("---")
         st.markdown("#### Your Card Details")
         asking_price = st.number_input("Your Asking Price ($)", min_value=0.0, value=100.0, step=1.0)
         purchase_price = st.number_input("Your Purchase Price ($)", min_value=0.0, value=75.0, step=1.0)
-        avg_3mo_price = st.number_input("Average Market Price Over Last 3 Months ($)", min_value=0.0, value=85.0, step=1.0)
+        avg_3mo_price = st.number_input("Average Market Price Over Last 3 Months ($)", min_value=0.0, value=float(round(real_3mo_avg, 2)), step=1.0)
 
         st.markdown("#### Simulation Settings")
         num_months = 12
         num_simulations = st.slider("Number of Simulations", 100, 100000, 500, step=100)
 
-        initial_price = d["market_value"].iloc[-1]
-        st.write(f"Latest Market Value for {sim_category}: ${initial_price:.2f}")
+        initial_price = avg_3mo_price
+        
 
         # Flip Forecast Simulation
         results = []
