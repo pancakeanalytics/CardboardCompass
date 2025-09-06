@@ -284,9 +284,9 @@ elif page == "State of Market":
                              hovertemplate="Category=%{x}<br>3-Mo=%{y:.2f}%<extra></extra>"))
         fig.add_hline(y=0, line_width=1, line_dash="dash", opacity=0.6)
         fig.update_layout(barmode="group", xaxis_title="Category", yaxis_title="Percent change",
-                          title=f"YoY vs 3-Month Momentum (through {latest:%b %Y})",
-                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                          margin=dict(l=10, r=10, t=60, b=10))
+                        title=f"YoY vs 3-Month Momentum (through {latest:%b %Y})",
+                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                        margin=dict(l=10, r=10, t=60, b=10))
         st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
         best_yoy_cat  = mkt.set_index("Category")["YoY %"].idxmax()
@@ -572,13 +572,14 @@ elif page == "Pancake Analytics Trading Card Market Report":
                           .melt(id_vars="_m", var_name="Category", value_name="ret")
                           .dropna()
                           .groupby("_m")["ret"].mean().rename(lambda x: month_map[x]))
-    weak_month  = month_perf.idxmin() if not month_perf.empty else "July"
-    strong_month= month_perf.idxmax() if not month_perf.empty else "December"
+    weak_month  = month_perf.idxmin() if not month_perf.empty else "September"
+    strong_month= month_perf.idxmax() if not month_perf.empty else "August"
 
     top_3mo_up   = ", ".join(mkt_df.sort_values("3-Mo %", ascending=False).head(3).index)
     top_yoy_up   = ", ".join(mkt_df.sort_values("YoY %",  ascending=False).head(3).index)
     bottom_3mo   = ", ".join(mkt_df.sort_values("3-Mo %", ascending=True ).head(2).index)
 
+    # ── Dynamic headline (kept) ─────────────────────────────────────────
     def headline_text(yoy, mo3, breadth):
         if mo3 >= 2 and yoy >= 0 and breadth >= 60:
             return (
@@ -605,29 +606,109 @@ elif page == "Pancake Analytics Trading Card Market Report":
             "**What It Means for You:** Some tables are buzzing, others are quiet. Pick your spots."
         )
 
-    def closing_read(yoy, mo3, breadth, strong_m, weak_m):
-        lines = []
-        if mo3 > 0 and breadth >= 50:
-            lines.append("**Collectors**\n- *What the Data Says*: Hunt +3-Mo but negative YoY.\n- *What It Means for You*: Undervalued but waking up — grab before the crowd.")
-            lines.append("**Flippers**\n- *What the Data Says*: Focus upper-right (YoY & 3-Mo > 0).\n- *What It Means for You*: Ride the hot hands; use stops.")
-            lines.append("**Investors**\n- *What the Data Says*: Breadth > 50% supports trend.\n- *What It Means for You*: When most categories rise, staying invested makes sense.")
-        elif mo3 > 0 and breadth < 50:
-            lines.append("**Collectors**\n- *What the Data Says*: Improvement is narrow.\n- *What It Means for You*: Only a few lanes are hot — stick to the blue chips.")
-            lines.append("**Flippers**\n- *What the Data Says*: Relative strength only.\n- *What It Means for You*: Flip what’s moving; skip sleepy sets.")
-            lines.append("**Investors**\n- *What the Data Says*: Wait for confirmation.\n- *What It Means for You*: Don’t size up until breadth expands.")
+    # ── NEW: Dynamic overall take for Closing Read ───────────────────────
+    def overall_take(yoy, mo3, breadth, strong_m, weak_m):
+        # Normalize NaNs
+        yoy = float(yoy) if pd.notna(yoy) else 0.0
+        mo3 = float(mo3) if pd.notna(mo3) else 0.0
+        breadth = float(breadth) if pd.notna(breadth) else 0.0
+
+        if mo3 > 0 and yoy < 0 and breadth >= 55:
+            return (
+                f"**Overall Take:** The hobby feels like it’s **waking up**. Year-over-year still looks soft, "
+                f"but the last few months are climbing and more categories are joining in. That’s the classic early-rebound look. "
+                f"Use the softer **{weak_m}** window to build positions and plan to show or sell into **{strong_m}** strength."
+            )
+        if mo3 > 0 and yoy > 0 and breadth >= 60:
+            return (
+                f"**Overall Take:** We’re in a **broad, healthy push** — short-term and YoY are both green and the strength is wide. "
+                f"Runs like this often carry farther than people expect. Keep your playbook handy for **{strong_m}** strength; "
+                f"don’t overpay in **{weak_m}** when patience gets you better entries."
+            )
+        if mo3 <= 0 and yoy > 0:
+            return (
+                f"**Overall Take:** The market’s **catching its breath**. We’re still up vs last year, but the last few months cooled off. "
+                f"Let prices come to you in **{weak_m}**, and be selective on upgrades. "
+                f"Momentum tends to rotate — the next leaders could emerge as we head toward **{strong_m}**."
+            )
+        if mo3 < 0 and yoy < 0:
+            return (
+                f"**Overall Take:** It’s a **buyer’s market for the patient**. Both short-term and YoY are soft, which makes quick flips tougher "
+                f"but negotiation easier. Build the PC in **{weak_m}**, and be ready to lighten up when **{strong_m}** seasonality lifts bids."
+            )
+        return (
+            f"**Overall Take:** It’s a **mixed table right now** — some categories are buzzing, others are quiet. "
+            f"Lean into relative strength, bargain hunt in **{weak_m}**, and plan exits into **{strong_m}**."
+        )
+
+    # Persona guidance (refreshed, conversational)
+    def persona_read(yoy, mo3, breadth, strong_m, weak_m):
+        blocks = []
+
+        if mo3 > 0 and yoy < 0:
+            collectors = (
+                "**Collectors**\n"
+                "*What the Data Says:* Short-term strength with negative YoY.\n"
+                "*What It Means for You:* This is the sweet spot to build the PC — prices still look cheap vs last year, "
+                "but momentum is turning up. Grab key cards before the crowd wakes up."
+            )
         elif mo3 <= 0 and yoy >= 0:
-            lines.append("**Collectors**\n- *What the Data Says*: Rotation/digestion.\n- *What It Means for You*: Let prices come to you; set patient bids.")
-            lines.append("**Flippers**\n- *What the Data Says*: Short-term edge fading.\n- *What It Means for You*: Tighter margins — shorten holds.")
-            lines.append("**Investors**\n- *What the Data Says*: Maintain core; add on breadth upticks.\n- *What It Means for You*: Hold the base, add on the next push.")
+            collectors = (
+                "**Collectors**\n"
+                "*What the Data Says:* YoY positive, near-term cooled.\n"
+                "*What It Means for You:* Let the market come to you. Patient bids in softer **"
+                f"{weak_m}** can land upgrades; reassess as we approach **{strong_m}**."
+            )
         else:
-            lines.append("**Collectors**\n- *What the Data Says*: Build PC in weakness.\n- *What It Means for You*: Bargain hunt and negotiate hard.")
-            lines.append("**Flippers**\n- *What the Data Says*: Preserve capital.\n- *What It Means for You*: Avoid forcing trades without momentum.")
-            lines.append("**Investors**\n- *What the Data Says*: Watch for breadth thrust/MACD resets.\n- *What It Means for You*: Keep cash ready; the next wave will show itself.")
-        lines.append(f"**Seasonality**\n- *What the Data Says*: Softer in {weak_m}, stronger in {strong_m}.\n- *What It Means for You*: Think bargain hunting in {weak_m}, sell into strength in {strong_m}.")
-        return "\n\n".join(lines)
+            collectors = (
+                "**Collectors**\n"
+                "*What the Data Says:* Mixed signals across categories.\n"
+                "*What It Means for You:* Focus on grails you love and use dips to your advantage."
+            )
+        blocks.append(collectors)
+
+        if mo3 > 0:
+            flippers = (
+                "**Flippers**\n"
+                "*What the Data Says:* Momentum is concentrated in clear leaders.\n"
+                "*What It Means for You:* Don’t chase everything — ride the hot hands and set exits early. "
+                "Timing beats volume in this phase."
+            )
+        else:
+            flippers = (
+                "**Flippers**\n"
+                "*What the Data Says:* Short-term edge is fading.\n"
+                "*What It Means for You:* Tighten holds, lower risk, and wait for the next momentum push."
+            )
+        blocks.append(flippers)
+
+        if breadth >= 50 and mo3 > 0:
+            investors = (
+                "**Investors**\n"
+                "*What the Data Says:* Breadth is supportive and short-term is up.\n"
+                "*What It Means for You:* This isn’t one set carrying the market — it’s healthier participation. "
+                "Lean into leaders while keeping diversification for rotations."
+            )
+        else:
+            investors = (
+                "**Investors**\n"
+                "*What the Data Says:* Narrow leadership / uncertain momentum.\n"
+                "*What It Means for You:* Keep a core, size new adds carefully, and look for breadth to expand before pressing."
+            )
+        blocks.append(investors)
+
+        seasonality = (
+            "**Seasonality**\n"
+            f"*What the Data Says:* Historically softer in **{weak_m}**, stronger in **{strong_m}**.\n"
+            f"*What It Means for You:* Think bargain hunting in **{weak_m}** and selling/showcasing into **{strong_m}**."
+        )
+        blocks.append(seasonality)
+
+        return "\n\n".join(blocks)
 
     dyn_headline = headline_text(comp_yoy, comp_3mo, breadth_3mo)
-    dyn_closing  = closing_read(comp_yoy, comp_3mo, breadth_3mo, strong_month, weak_month)
+    dyn_overall  = overall_take(comp_yoy, comp_3mo, breadth_3mo, strong_month, weak_month)
+    dyn_personas = persona_read(comp_yoy, comp_3mo, breadth_3mo, strong_month, weak_month)
 
     # KPIs
     k1,k2,k3,k4 = st.columns(4)
@@ -706,7 +787,8 @@ elif page == "Pancake Analytics Trading Card Market Report":
         f"Reds mark soft spots — **{worst_yoy}** (YoY), **{worst_3mo}** (3-Mo)."
     )
 
-    st.markdown(f"### 🧭 Closing Read\n{dyn_closing}")
+    # NEW: Closing Read with dynamic overall take + conversational personas
+    st.markdown(f"### 🧭 Closing Read\n\n{dyn_overall}\n\n{dyn_personas}")
 
     # Snapshot download (includes narrative)
     snap = mkt_df.assign(**{
@@ -714,8 +796,9 @@ elif page == "Pancake Analytics Trading Card Market Report":
         "Composite 3-Mo %": comp_3mo,
         "Breadth 3-Mo %>0": breadth_3mo,
         "As Of": last_row.strftime("%Y-%m"),
-        "Headline": dyn_headline,
-        "Closing Read": dyn_closing
+        "Headline": headline_text(comp_yoy, comp_3mo, breadth_3mo),
+        "Overall Take": dyn_overall,
+        "Closing Read": dyn_personas
     })
     st.download_button(
         "⬇️ Download report snapshot (CSV)",
