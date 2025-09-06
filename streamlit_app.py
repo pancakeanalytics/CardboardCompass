@@ -284,9 +284,9 @@ elif page == "State of Market":
                              hovertemplate="Category=%{x}<br>3-Mo=%{y:.2f}%<extra></extra>"))
         fig.add_hline(y=0, line_width=1, line_dash="dash", opacity=0.6)
         fig.update_layout(barmode="group", xaxis_title="Category", yaxis_title="Percent change",
-                        title=f"YoY vs 3-Month Momentum (through {latest:%b %Y})",
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                        margin=dict(l=10, r=10, t=60, b=10))
+                          title=f"YoY vs 3-Month Momentum (through {latest:%b %Y})",
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                          margin=dict(l=10, r=10, t=60, b=10))
         st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
         best_yoy_cat  = mkt.set_index("Category")["YoY %"].idxmax()
@@ -579,36 +579,35 @@ elif page == "Pancake Analytics Trading Card Market Report":
     top_yoy_up   = ", ".join(mkt_df.sort_values("YoY %",  ascending=False).head(3).index)
     bottom_3mo   = ", ".join(mkt_df.sort_values("3-Mo %", ascending=True ).head(2).index)
 
-    # ── Dynamic headline (kept) ─────────────────────────────────────────
-    def headline_text(yoy, mo3, breadth):
+    # ── NEW: Headline components (returns data line + meaning title) ─────
+    def headline_components(yoy, mo3, breadth):
         if mo3 >= 2 and yoy >= 0 and breadth >= 60:
             return (
-                "**What the Data Says:** Broadening uptrend — short-term strength with positive YoY; leadership is widening.\n\n"
-                "**What It Means for You:** It’s not just one hot set — the market’s warming up across the board. Short-term is up, and YoY’s turning green."
+                "Broadening uptrend — short-term strength with positive YoY; leadership is widening.",
+                "The market’s warming up across the board — short-term is up and YoY is turning green."
             )
         if mo3 > 0 and yoy < 0 and breadth >= 55:
             return (
-                "**What the Data Says:** Early rebound — 3-month momentum positive while YoY remains negative; improvement is spreading.\n\n"
-                "**What It Means for You:** Comeback vibes — looks cheap vs last year, but the last few months are perking up."
+                "Early rebound — 3-month momentum positive while YoY remains negative; improvement is spreading.",
+                "Comeback vibes: it still looks cheap vs last year, but the last few months are perking up."
             )
         if mo3 <= 0 and yoy > 0:
             return (
-                "**What the Data Says:** Tiring rally — YoY positive but short-term momentum cooled; digestion likely.\n\n"
-                "**What It Means for You:** Still up overall, but the near-term pop is catching its breath."
+                "Tiring rally — YoY positive but short-term momentum cooled; digestion likely.",
+                "Still up overall, but the near-term pop is catching its breath."
             )
         if mo3 < 0 and yoy < 0:
             return (
-                "**What the Data Says:** Market under pressure — both YoY and 3-month negative.\n\n"
-                "**What It Means for You:** Softer market. Good for negotiating, tougher for quick flips."
+                "Market under pressure — both YoY and 3-month negative.",
+                "Softer tape: better for negotiating, tougher for quick flips."
             )
         return (
-            "**What the Data Says:** Mixed setup — signals split across categories.\n\n"
-            "**What It Means for You:** Some tables are buzzing, others are quiet. Pick your spots."
+            "Mixed setup — signals split across categories.",
+            "Some tables are buzzing, others are quiet. Pick your spots."
         )
 
-    # ── NEW: Dynamic overall take for Closing Read ───────────────────────
+    # ── Dynamic overall take for Closing Read ─────────────────────────────
     def overall_take(yoy, mo3, breadth, strong_m, weak_m):
-        # Normalize NaNs
         yoy = float(yoy) if pd.notna(yoy) else 0.0
         mo3 = float(mo3) if pd.notna(mo3) else 0.0
         breadth = float(breadth) if pd.notna(breadth) else 0.0
@@ -641,7 +640,7 @@ elif page == "Pancake Analytics Trading Card Market Report":
             f"Lean into relative strength, bargain hunt in **{weak_m}**, and plan exits into **{strong_m}**."
         )
 
-    # Persona guidance (refreshed, conversational)
+    # Persona guidance (conversational)
     def persona_read(yoy, mo3, breadth, strong_m, weak_m):
         blocks = []
 
@@ -706,7 +705,8 @@ elif page == "Pancake Analytics Trading Card Market Report":
 
         return "\n\n".join(blocks)
 
-    dyn_headline = headline_text(comp_yoy, comp_3mo, breadth_3mo)
+    # Build headline & reads
+    data_headline, meaning_title = headline_components(comp_yoy, comp_3mo, breadth_3mo)
     dyn_overall  = overall_take(comp_yoy, comp_3mo, breadth_3mo, strong_month, weak_month)
     dyn_personas = persona_read(comp_yoy, comp_3mo, breadth_3mo, strong_month, weak_month)
 
@@ -717,7 +717,9 @@ elif page == "Pancake Analytics Trading Card Market Report":
     k3.metric("Breadth (3-Mo > 0)", f"{breadth_3mo:0.0f}%")
     k4.metric("As of", f"{last_row:%b %Y}")
 
-    st.markdown(f"### 📰 Headline\n{dyn_headline}")
+    # Slide-style title & data note
+    st.markdown(f"## **{meaning_title}**")
+    st.markdown(f"**What the Data Says:** {data_headline}")
 
     # Top Movers
     colt1, colt2 = st.columns(2)
@@ -787,7 +789,7 @@ elif page == "Pancake Analytics Trading Card Market Report":
         f"Reds mark soft spots — **{worst_yoy}** (YoY), **{worst_3mo}** (3-Mo)."
     )
 
-    # NEW: Closing Read with dynamic overall take + conversational personas
+    # Closing Read (dynamic overall take + conversational personas)
     st.markdown(f"### 🧭 Closing Read\n\n{dyn_overall}\n\n{dyn_personas}")
 
     # Snapshot download (includes narrative)
@@ -796,7 +798,8 @@ elif page == "Pancake Analytics Trading Card Market Report":
         "Composite 3-Mo %": comp_3mo,
         "Breadth 3-Mo %>0": breadth_3mo,
         "As Of": last_row.strftime("%Y-%m"),
-        "Headline": headline_text(comp_yoy, comp_3mo, breadth_3mo),
+        "Slide Title": meaning_title,
+        "Data Note": data_headline,
         "Overall Take": dyn_overall,
         "Closing Read": dyn_personas
     })
