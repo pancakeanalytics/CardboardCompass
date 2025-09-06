@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
-import matplotlib.pyplot as plt  # used in Custom Index section; safe to remove if you convert it too
+import matplotlib.pyplot as plt  # still used in Custom Index; safe to convert to Plotly later
 import plotly.graph_objects as go
 
 # ─────────────────────────────────────────
@@ -66,10 +66,7 @@ def preprocess(df, cat):
     return d.groupby("Month_Year")["market_value"].mean().reset_index()
 
 def forecast(df, horizon=12, seasonal_periods=12, trend="add", seasonal="add", ci_level=0.95):
-    """
-    Holt-Winters forecast with residual-based CI.
-    Returns (hist_df, fc_df, tidy_hist, tidy_fc).
-    """
+    """Holt-Winters forecast with residual-based CI."""
     y = df.market_value.astype(float)
     model = ExponentialSmoothing(y, trend=trend, seasonal=seasonal,
                                  seasonal_periods=seasonal_periods).fit()
@@ -87,15 +84,11 @@ def forecast(df, horizon=12, seasonal_periods=12, trend="add", seasonal="add", c
         "Upper": fc + ci,
         "Lower": fc - ci
     })
-
     hist_df = pd.DataFrame({
         "Date": df.Month_Year,
         "Historical": df.market_value.values
     })
-
-    tidy_hist = hist_df.melt(id_vars="Date", var_name="Series", value_name="Value")
-    tidy_fc   = fc_df.melt(id_vars="Date", var_name="Series", value_name="Value")
-    return hist_df, fc_df, tidy_hist, tidy_fc
+    return hist_df, fc_df
 
 def macd(df):
     s = df.market_value.ewm(span=12,adjust=False).mean()
@@ -120,7 +113,7 @@ def yoy_3mo(series, latest):
 PAGES = ["Category Analysis","Market HeatMap","State of Market",
          "Custom Index Builder","Seasonality HeatMap",
          "Rolling Volatility","Correlation Matrix","Flip Forecast",
-         "Pancake Analytics Trading Card Market Report"]  # NEW
+         "Pancake Analytics Trading Card Market Report"]
 
 with st.sidebar:
     page = st.selectbox("Choose an analysis", PAGES)
@@ -128,7 +121,7 @@ with st.sidebar:
     cat2 = st.selectbox("Compare against", ["None"]+[c for c in CATEGORIES if c!=cat1])
 
 # ─────────────────────────────────────────
-#  PAGE 1 ▸ CATEGORY ANALYSIS
+#  PAGE 1 ▸ CATEGORY ANALYSIS (Interactive + Conversational Notes)
 # ─────────────────────────────────────────
 if page == "Category Analysis":
     if df_raw is None:
@@ -138,7 +131,7 @@ if page == "Category Analysis":
             d = preprocess(df_raw, cat)
             st.subheader(cat)
 
-            # ── Forecast (interactive Plotly)
+            # Forecast controls
             with st.expander("Forecast settings", expanded=False):
                 horizon = st.slider("Horizon (months)", 6, 24, 12, step=1, key=f"h_{cat}")
                 ci = st.select_slider("Confidence interval", options=[0.80,0.90,0.95,0.98,0.99],
@@ -147,103 +140,80 @@ if page == "Category Analysis":
                 hw_seasonal = st.selectbox("Seasonal", ["add","mul"], index=0, key=f"s_{cat}")
                 sp = st.number_input("Seasonal periods", min_value=4, max_value=24, value=12, step=1, key=f"sp_{cat}")
 
-            hist_df, fc_df, _, _ = forecast(d, horizon=horizon,
-                                             seasonal_periods=sp,
-                                             trend=hw_trend, seasonal=hw_seasonal,
-                                             ci_level=ci)
+            hist_df, fc_df = forecast(d, horizon=horizon,
+                                      seasonal_periods=sp,
+                                      trend=hw_trend, seasonal=hw_seasonal,
+                                      ci_level=ci)
 
             pct = (fc_df.Forecast.iloc[-1]-d.market_value.iloc[-1])/d.market_value.iloc[-1]*100
 
+            # Forecast chart
             fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=hist_df["Date"], y=hist_df["Historical"],
-                mode="lines", name="Historical",
-                hovertemplate="Date=%{x|%b %Y}<br>Value=%{y:.2f}<extra></extra>"
-            ))
-            fig.add_trace(go.Scatter(
-                x=fc_df["Date"], y=fc_df["Forecast"],
-                mode="lines", name="Forecast",
-                line=dict(dash="dash"),
-                hovertemplate="Date=%{x|%b %Y}<br>Forecast=%{y:.2f}<extra></extra>"
-            ))
+            fig.add_trace(go.Scatter(x=hist_df["Date"], y=hist_df["Historical"], mode="lines", name="Historical",
+                                     hovertemplate="Date=%{x|%b %Y}<br>Value=%{y:.2f}<extra></extra>"))
+            fig.add_trace(go.Scatter(x=fc_df["Date"], y=fc_df["Forecast"], mode="lines", name="Forecast",
+                                     line=dict(dash="dash"),
+                                     hovertemplate="Date=%{x|%b %Y}<br>Forecast=%{y:.2f}<extra></extra>"))
             fig.add_trace(go.Scatter(
                 x=pd.concat([fc_df["Date"], fc_df["Date"][::-1]]),
                 y=pd.concat([fc_df["Upper"], fc_df["Lower"][::-1]]),
-                fill="toself",
-                fillcolor="rgba(66, 135, 245, 0.15)",
-                line=dict(color="rgba(66,135,245,0)"),
-                name=f"{int(ci*100)}% interval",
-                hoverinfo="skip",
-                showlegend=True
+                fill="toself", fillcolor="rgba(66, 135, 245, 0.15)",
+                line=dict(color="rgba(66,135,245,0)"), name=f"{int(ci*100)}% interval",
+                hoverinfo="skip", showlegend=True
             ))
-            fig.update_layout(
-                title=f"{horizon}-Month Holt-Winters Forecast",
-                xaxis_title="Month",
-                yaxis_title="Market Value",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                margin=dict(l=10, r=10, t=50, b=10),
-            )
+            fig.update_layout(title=f"{horizon}-Month Holt-Winters Forecast",
+                              xaxis_title="Month", yaxis_title="Market Value",
+                              legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                              margin=dict(l=10, r=10, t=50, b=10))
             st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
-            # Download forecast data
-            csv = pd.concat([
-                hist_df.rename(columns={"Historical":"Value"}).assign(Series="Historical"),
-                fc_df.rename(columns={"Forecast":"Value"})[["Date","Value"]].assign(Series="Forecast")
-            ]).sort_values("Date").to_csv(index=False)
-            st.download_button(
-                "⬇️ Download forecast data (CSV)",
-                data=csv,
-                file_name=f"{cat.replace(' ','_').lower()}_holtwinters_forecast.csv",
-                mime="text/csv",
-                key=f"dlfc_{cat}"
+            st.markdown(
+                f"**Tech:** Holt-Winters with {hw_trend} trend & {hw_seasonal} seasonality projects the next {horizon} months; band is ±z·σ of residuals. "
+                f"Latest forecast vs last actual: **{pct:+.1f}%**.\n\n"
+                f"**Plain:** Blue is history, dashed line is where we think prices head next. The shaded area is the wiggle room. "
+                f"For **{cat}**, the model says ~**{pct:+.1f}%** over the next year — treat it as a guide, not gospel."
             )
 
-            # ── MACD Trend (interactive Plotly)
+            # MACD Trend
             macd_line, signal_line, bucket = macd(d)
-            macd_df = pd.DataFrame({
-                "Date": d.Month_Year,
-                "MACD": macd_line.values,
-                "Signal": signal_line.values
-            })
+            macd_df = pd.DataFrame({"Date": d.Month_Year, "MACD": macd_line.values, "Signal": signal_line.values})
             fig_macd = go.Figure()
-            fig_macd.add_trace(go.Scatter(
-                x=macd_df["Date"], y=macd_df["MACD"],
-                mode="lines", name="MACD",
-                hovertemplate="Date=%{x|%b %Y}<br>MACD=%{y:.3f}<extra></extra>"
-            ))
-            fig_macd.add_trace(go.Scatter(
-                x=macd_df["Date"], y=macd_df["Signal"],
-                mode="lines", name="Signal",
-                hovertemplate="Date=%{x|%b %Y}<br>Signal=%{y:.3f}<extra></extra>"
-            ))
+            fig_macd.add_trace(go.Scatter(x=macd_df["Date"], y=macd_df["MACD"], mode="lines", name="MACD",
+                                          hovertemplate="Date=%{x|%b %Y}<br>MACD=%{y:.3f}<extra></extra>"))
+            fig_macd.add_trace(go.Scatter(x=macd_df["Date"], y=macd_df["Signal"], mode="lines", name="Signal",
+                                          hovertemplate="Date=%{x|%b %Y}<br>Signal=%{y:.3f}<extra></extra>"))
             fig_macd.add_hline(y=0, line_width=1, line_dash="dash", opacity=0.6)
-            fig_macd.update_layout(
-                title=f"MACD Trend – bucket: {bucket.iloc[-1]}",
-                xaxis_title="Month",
-                yaxis_title="MACD value",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                margin=dict(l=10, r=10, t=50, b=10),
-            )
+            fig_macd.update_layout(title=f"MACD Trend – bucket: {bucket.iloc[-1]}",
+                                   xaxis_title="Month", yaxis_title="MACD value",
+                                   legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                   margin=dict(l=10, r=10, t=50, b=10))
             st.plotly_chart(fig_macd, use_container_width=True, theme="streamlit")
 
-            # ── Seasonality (interactive Plotly)
+            st.markdown(
+                "**Tech:** MACD above its signal and > 0 = bullish momentum; below 0 = downtrend.\n\n"
+                f"**Plain:** If the blue line (MACD) is on top and above zero, the wind’s at your back. "
+                f"For **{cat}**, the current bucket is **{bucket.iloc[-1]}** — think ‘how aggressive should I be right now?’"
+            )
+
+            # Seasonality
             d["Month"] = d.Month_Year.dt.month_name()
             month_order = ["January","February","March","April","May","June",
                            "July","August","September","October","November","December"]
-            month_avg = (d.groupby("Month").market_value.mean()
-                           .reindex(month_order))
+            month_avg = (d.groupby("Month").market_value.mean().reindex(month_order))
             fig_seas = go.Figure()
-            fig_seas.add_trace(go.Bar(
-                x=month_avg.index, y=month_avg.values, name="Avg Value by Month",
-                hovertemplate="Month=%{x}<br>Avg=%{y:.2f}<extra></extra>"
-            ))
-            fig_seas.update_layout(
-                title="Average Value by Month (Seasonality)",
-                xaxis_title="Month",
-                yaxis_title="Average Value",
-                margin=dict(l=10, r=10, t=50, b=10)
-            )
+            fig_seas.add_trace(go.Bar(x=month_avg.index, y=month_avg.values, name="Avg Value by Month",
+                                      hovertemplate="Month=%{x}<br>Avg=%{y:.2f}<extra></extra>"))
+            fig_seas.update_layout(title="Average Value by Month (Seasonality)",
+                                   xaxis_title="Month", yaxis_title="Average Value",
+                                   margin=dict(l=10, r=10, t=50, b=10))
             st.plotly_chart(fig_seas, use_container_width=True, theme="streamlit")
+
+            low_mo = month_avg.idxmin() if not month_avg.isna().all() else "July"
+            hi_mo  = month_avg.idxmax() if not month_avg.isna().all() else "December"
+            st.markdown(
+                "**Tech:** Monthly mean levels across the full history.\n\n"
+                f"**Plain:** {cat} tends to be cheaper in **{low_mo}** and stronger in **{hi_mo}** — use that to time buys/sells."
+            )
 
         if cat2 == "None":
             show_card(cat1)
@@ -253,7 +223,7 @@ if page == "Category Analysis":
             with c2: show_card(cat2)
 
 # ─────────────────────────────────────────
-#  PAGE 2 ▸ MARKET HEATMAP (YES-cell shading)
+#  PAGE 2 ▸ MARKET HEATMAP
 # ─────────────────────────────────────────
 elif page == "Market HeatMap":
     if df_raw is None:
@@ -282,9 +252,14 @@ elif page == "Market HeatMap":
 
         st.subheader("MACD Market HeatMap")
         st.dataframe(styled, use_container_width=True, height=350)
+        st.markdown(
+            "**Tech:** Heatmap of MACD buckets with persona rules.\n\n"
+            "**Plain:** Green ‘Yes’ cells are the quick tells. If you collect, look for green in ‘Buy?’; "
+            "if you flip, green in ‘Sell?’ can be your exit signal."
+        )
 
 # ─────────────────────────────────────────
-#  PAGE 3 ▸ STATE OF MARKET (Interactive)
+#  PAGE 3 ▸ STATE OF MARKET (Interactive + Conversational)
 # ─────────────────────────────────────────
 elif page == "State of Market":
     if df_raw is None:
@@ -300,14 +275,9 @@ elif page == "State of Market":
             s = (df_raw[df_raw["Category"] == c]
                  .groupby("Month_Year")["market_value"].mean())
             y, r = yoy_3mo(s, latest)
-            yoy_vals.append(y)
-            mo3_vals.append(r)
+            yoy_vals.append(y); mo3_vals.append(r)
 
-        mkt = pd.DataFrame({
-            "Category": CATEGORIES,
-            "YoY %": yoy_vals,
-            "3-Mo %": mo3_vals
-        })
+        mkt = pd.DataFrame({"Category": CATEGORIES, "YoY %": yoy_vals, "3-Mo %": mo3_vals})
 
         col_a, col_b = st.columns([1,1])
         with col_a:
@@ -319,26 +289,22 @@ elif page == "State of Market":
                           if sort_by != "Category" else mkt.sort_values("Category", ascending=True))
 
         fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=mkt_sorted["Category"], y=mkt_sorted["YoY %"],
-            name="YoY %",
-            hovertemplate="Category=%{x}<br>YoY=%{y:.2f}%<extra></extra>"
-        ))
-        fig.add_trace(go.Bar(
-            x=mkt_sorted["Category"], y=mkt_sorted["3-Mo %"],
-            name="3-Mo %",
-            hovertemplate="Category=%{x}<br>3-Mo=%{y:.2f}%<extra></extra>"
-        ))
+        fig.add_trace(go.Bar(x=mkt_sorted["Category"], y=mkt_sorted["YoY %"], name="YoY %",
+                             hovertemplate="Category=%{x}<br>YoY=%{y:.2f}%<extra></extra>"))
+        fig.add_trace(go.Bar(x=mkt_sorted["Category"], y=mkt_sorted["3-Mo %"], name="3-Mo %",
+                             hovertemplate="Category=%{x}<br>3-Mo=%{y:.2f}%<extra></extra>"))
         fig.add_hline(y=0, line_width=1, line_dash="dash", opacity=0.6)
-        fig.update_layout(
-            barmode="group",
-            xaxis_title="Category",
-            yaxis_title="Percent change",
-            title=f"YoY vs 3-Month Momentum (through {latest:%b %Y})",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            margin=dict(l=10, r=10, t=60, b=10),
-        )
+        fig.update_layout(barmode="group", xaxis_title="Category", yaxis_title="Percent change",
+                          title=f"YoY vs 3-Month Momentum (through {latest:%b %Y})",
+                          legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                          margin=dict(l=10, r=10, t=60, b=10))
         st.plotly_chart(fig, use_container_width=True, theme="streamlit")
+
+        st.markdown(
+            "**Tech:** Bar chart compares long-run YoY vs short-run 3-month momentum by category.\n\n"
+            "**Plain:** Two bars per category — tall positive bars = heat. If 3-Mo is up but YoY is down, "
+            "that’s a classic ‘turning the corner’ setup."
+        )
 
         st.dataframe(mkt_sorted.round(2), use_container_width=True)
         st.download_button(
@@ -349,15 +315,14 @@ elif page == "State of Market":
         )
 
 # ─────────────────────────────────────────
-#  PAGE 4 ▸ CUSTOM INDEX BUILDER
+#  PAGE 4 ▸ CUSTOM INDEX BUILDER (kept as-is; add notes)
 # ─────────────────────────────────────────
 elif page == "Custom Index Builder":
     if df_raw is None:
         st.info("Run the analysis first.")
     else:
         st.subheader("Custom Index Builder")
-        sel = st.multiselect("Categories", CATEGORIES,
-                             default=["Pokemon","Magic the Gathering"])
+        sel = st.multiselect("Categories", CATEGORIES, default=["Pokemon","Magic the Gathering"])
         if not sel: st.warning("Pick at least one."); st.stop()
 
         raw_w = {c: st.slider(f"{c} weight (%)",0,100,20,5) for c in sel}
@@ -376,7 +341,6 @@ elif page == "Custom Index Builder":
         sports = pivot[["Baseball","Basketball","Football","Soccer","Hockey"]].mean(axis=1)
         nons   = pivot[["Star Wars","Marvel","Fortnite"]].mean(axis=1)
 
-        # This one uses Matplotlib; convert to Plotly if desired.
         fig_l,ax_l=plt.subplots()
         custom.plot(ax=ax_l,lw=2,label="My Index")
         for s,l in zip([poke,tcg,sports,nons],["Pokémon","TCGs","Sports","Non-Sports"]):
@@ -393,9 +357,14 @@ elif page == "Custom Index Builder":
 
         st.table(weights.mul(100).round(1).rename("Weight %"))
         st.table(perf)
+        st.markdown(
+            "**Tech:** Weighted blend vs reference composites; summary performance metrics.\n\n"
+            "**Plain:** Slide the weights to build ‘your market.’ The table tells you if your blend is beating "
+            "Pokémon-only, TCGs, Sports, or Non-Sports."
+        )
 
 # ─────────────────────────────────────────
-#  PAGE 5 ▸ SEASONALITY HEATMAP (Interactive)
+#  PAGE 5 ▸ SEASONALITY HEATMAP (Interactive + Conversational)
 # ─────────────────────────────────────────
 elif page == "Seasonality HeatMap":
     if df_raw is None:
@@ -411,24 +380,23 @@ elif page == "Seasonality HeatMap":
 
         month_labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
         fig_hm = go.Figure(data=go.Heatmap(
-            z=pct.values,
-            x=month_labels,
-            y=pct.index.tolist(),
-            zmin=-20, zmax=20,
-            colorscale="RdYlGn",
+            z=pct.values, x=month_labels, y=pct.index.tolist(),
+            zmin=-20, zmax=20, colorscale="RdYlGn",
             hovertemplate="Category=%{y}<br>Month=%{x}<br>%Δ=%{z:.2f}%<extra></extra>"
         ))
-        fig_hm.update_layout(
-            title="Seasonality Heatmap – Avg MoM % Change",
-            xaxis_title="Month",
-            yaxis_title="Category",
-            margin=dict(l=10, r=10, t=50, b=10)
-        )
+        fig_hm.update_layout(title="Seasonality Heatmap – Avg MoM % Change",
+                             xaxis_title="Month", yaxis_title="Category",
+                             margin=dict(l=10, r=10, t=50, b=10))
         st.plotly_chart(fig_hm, use_container_width=True, theme="streamlit")
+
+        st.markdown(
+            "**Tech:** Average sequential % changes by calendar month.\n\n"
+            "**Plain:** Green months = usually stronger; red = softer. Use it to time buying the dips and selling into strength."
+        )
         st.dataframe(pct.fillna("—"),use_container_width=True,height=300)
 
 # ─────────────────────────────────────────
-#  PAGE 6 ▸ ROLLING VOLATILITY (Interactive)
+#  PAGE 6 ▸ ROLLING VOLATILITY (Interactive + Conversational)
 # ─────────────────────────────────────────
 elif page == "Rolling Volatility":
     if df_raw is None:
@@ -450,21 +418,14 @@ elif page == "Rolling Volatility":
         cv_df = pd.concat([cv1, cv2], axis=1)
 
         fig_v = go.Figure()
-        fig_v.add_trace(go.Scatter(
-            x=cv_df.index, y=cv_df.iloc[:,0], mode="lines", name=cv_df.columns[0],
-            hovertemplate="Date=%{x|%b %Y}<br>CoV=%{y:.2f}%<extra></extra>"
-        ))
-        fig_v.add_trace(go.Scatter(
-            x=cv_df.index, y=cv_df.iloc[:,1], mode="lines", name=cv_df.columns[1],
-            hovertemplate="Date=%{x|%b %Y}<br>CoV=%{y:.2f}%<extra></extra>"
-        ))
-        fig_v.update_layout(
-            title=f"{pick} – Rolling Volatility",
-            xaxis_title="Month",
-            yaxis_title="CoV (%)",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            margin=dict(l=10, r=10, t=60, b=10),
-        )
+        fig_v.add_trace(go.Scatter(x=cv_df.index, y=cv_df.iloc[:,0], mode="lines", name=cv_df.columns[0],
+                                   hovertemplate="Date=%{x|%b %Y}<br>CoV=%{y:.2f}%<extra></extra>"))
+        fig_v.add_trace(go.Scatter(x=cv_df.index, y=cv_df.iloc[:,1], mode="lines", name=cv_df.columns[1],
+                                   hovertemplate="Date=%{x|%b %Y}<br>CoV=%{y:.2f}%<extra></extra>"))
+        fig_v.update_layout(title=f"{pick} – Rolling Volatility",
+                            xaxis_title="Month", yaxis_title="CoV (%)",
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                            margin=dict(l=10, r=10, t=60, b=10))
         st.plotly_chart(fig_v, use_container_width=True, theme="streamlit")
 
         st.dataframe(cv_df.round(2), use_container_width=True)
@@ -474,9 +435,13 @@ elif page == "Rolling Volatility":
             file_name=f"volatility_{pick.replace(' ','_').lower()}.csv",
             mime="text/csv"
         )
+        st.markdown(
+            "**Tech:** CoV = rolling σ / mean. Higher % = bigger swings.\n\n"
+            "**Plain:** Spiky line = bumpy ride. If volatility’s cooling, it’s easier to buy patiently and sell cleanly."
+        )
 
 # ─────────────────────────────────────────
-#  PAGE 7 ▸ CORRELATION MATRIX (Interactive)
+#  PAGE 7 ▸ CORRELATION MATRIX (Interactive + Conversational)
 # ─────────────────────────────────────────
 elif page == "Correlation Matrix":
     if df_raw is None:
@@ -495,19 +460,13 @@ elif page == "Correlation Matrix":
         corr = mat.corr()
 
         fig_c = go.Figure(data=go.Heatmap(
-            z=corr.values,
-            x=corr.columns.tolist(),
-            y=corr.index.tolist(),
-            zmin=-1, zmax=1,
-            colorscale="RdYlGn",
+            z=corr.values, x=corr.columns.tolist(), y=corr.index.tolist(),
+            zmin=-1, zmax=1, colorscale="RdYlGn",
             hovertemplate="X=%{x}<br>Y=%{y}<br>ρ=%{z:.2f}<extra></extra>"
         ))
-        fig_c.update_layout(
-            title="Correlation Heatmap",
-            xaxis_title="Category",
-            yaxis_title="Category",
-            margin=dict(l=10, r=10, t=60, b=10)
-        )
+        fig_c.update_layout(title="Correlation Heatmap",
+                            xaxis_title="Category", yaxis_title="Category",
+                            margin=dict(l=10, r=10, t=60, b=10))
         st.plotly_chart(fig_c, use_container_width=True, theme="streamlit")
 
         st.dataframe(corr.round(2), use_container_width=True, height=300)
@@ -517,9 +476,13 @@ elif page == "Correlation Matrix":
             file_name=f"correlations_{'returns' if basis.startswith('Monthly') else 'levels'}.csv",
             mime="text/csv"
         )
+        st.markdown(
+            "**Tech:** ρ near +1 = move together; near −1 = move opposite.\n\n"
+            "**Plain:** Look for green pairs to stack trends, or red pairs to diversify your stash."
+        )
 
 # ─────────────────────────────────────────
-#  PAGE 8 ▸ PANCAKE ANALYTICS TRADING CARD MARKET REPORT (Dynamic)
+#  PAGE 8 ▸ PANCAKE ANALYTICS TRADING CARD MARKET REPORT (Dynamic, Conversational)
 # ─────────────────────────────────────────
 elif page == "Pancake Analytics Trading Card Market Report":
     if df_raw is None:
@@ -569,13 +532,13 @@ elif page == "Pancake Analytics Trading Card Market Report":
                                 "3-Mo %": [mo3_vals[c] for c in scope_cats]})
                     .set_index("Category").sort_index())
 
-        # Composite (equal-weight), breadth
+        # Composite & breadth
         composite = wide[scope_cats].mean(axis=1)
         comp_yoy = pct(composite, y_ago, last_row)
         comp_3mo = pct(composite, m_3,   last_row)
         breadth_3mo = float(np.mean(mkt_df["3-Mo %"] > 0) * 100)
 
-        # Seasonality by calendar month across scope
+        # Seasonality
         returns["Month_Num"] = returns.index.month
         month_map = {1:"January",2:"February",3:"March",4:"April",5:"May",6:"June",
                      7:"July",8:"August",9:"September",10:"October",11:"November",12:"December"}
@@ -590,41 +553,56 @@ elif page == "Pancake Analytics Trading Card Market Report":
         # Movers
         top_3mo_up   = ", ".join(mkt_df.sort_values("3-Mo %", ascending=False).head(3).index)
         top_yoy_up   = ", ".join(mkt_df.sort_values("YoY %",  ascending=False).head(3).index)
-        bottom_3mo   = ", ".join(mkt_df.sort_values("3-Mo %", ascending=True ).head(2).index)
 
-        # Dynamic Headline & Closing Read
+        # Dynamic Headline (tech + plain English)
         def headline_text(yoy, mo3, breadth):
             if mo3 >= 2 and yoy >= 0 and breadth >= 60:
-                return ("Broadening uptrend: short-term strength with positive YoY; "
-                        "leadership is widening across the market.")
+                return (
+                    "**Tech:** Broadening uptrend — short-term strength with positive YoY; leadership is widening.\n\n"
+                    "**Plain:** Cards aren’t just going up in one or two spots — strength is spreading. "
+                    "Short-term numbers are up and year-over-year is finally turning green. "
+                    "In hobby talk: it’s not just one hot set, the whole market’s heating up."
+                )
             if mo3 > 0 and yoy < 0 and breadth >= 55:
-                return ("Early rebound off the lows: 3-month momentum has turned up while YoY remains negative; "
-                        "improvement is spreading.")
+                return (
+                    "**Tech:** Early rebound — 3-month momentum turned up while YoY stays negative; improvement is spreading.\n\n"
+                    "**Plain:** Think ‘buying the comeback.’ Prices look cheap vs last year, but the last few months are perking up."
+                )
             if mo3 <= 0 and yoy > 0:
-                return ("Tiring rally: YoY still positive but short-term momentum has cooled — expect digestion/rotation.")
+                return (
+                    "**Tech:** Tiring rally — YoY positive but short-term momentum cooled; digestion likely.\n\n"
+                    "**Plain:** Rally caught its breath. Still healthy long-term, a little choppy near-term."
+                )
             if mo3 < 0 and yoy < 0:
-                return ("Market under pressure: both YoY and 3-month trends are negative — risk remains skewed to the downside.")
-            return ("Mixed but improving setup: signals are split, with selective strength and pockets of weakness.")
+                return (
+                    "**Tech:** Market under pressure — both YoY and 3-month negative.\n\n"
+                    "**Plain:** Softer market. Good for negotiating, tough for quick flips."
+                )
+            return (
+                "**Tech:** Mixed setup — signals split across categories.\n\n"
+                "**Plain:** Some tables are buzzing, others are quiet. Pick your spots."
+            )
 
+        # Dynamic Closing Read (tech + plain English)
         def closing_read(yoy, mo3, breadth, strong_m, weak_m):
             lines = []
             if mo3 > 0 and breadth >= 50:
-                lines.append("**Collectors:** Hunt value in categories with **+3-Mo but still negative YoY** — early cycle bargains.")
-                lines.append("**Flippers:** Lean into **upper-right quadrant** names (positive YoY & 3-Mo) and trail stops.")
-                lines.append("**Investors:** As long as **breadth stays above 50%**, the advance is likely to persist; buy pullbacks.")
+                lines.append("**Collectors**\n- *Tech*: Hunt +3-Mo but negative YoY.\n- *Plain*: Undervalued but waking up — grab them before the crowd does.")
+                lines.append("**Flippers**\n- *Tech*: Upper-right quadrant (YoY & 3-Mo > 0).\n- *Plain*: Ride the hot hands, manage risk with stops.")
+                lines.append("**Investors**\n- *Tech*: Breadth > 50% supports trend.\n- *Plain*: When most categories rise, staying invested makes sense.")
             elif mo3 > 0 and breadth < 50:
-                lines.append("**Collectors:** Improvement is **narrow** — be choosy and stick to liquid, iconic inserts.")
-                lines.append("**Flippers:** Focus on relative strength and avoid chasing thin breakouts.")
-                lines.append("**Investors:** Wait for **breadth to confirm** (>50%) before sizing up.")
+                lines.append("**Collectors**\n- *Tech*: Improvement is narrow.\n- *Plain*: Only a few lanes are hot — stick to liquid, iconic cards.")
+                lines.append("**Flippers**\n- *Tech*: Focus on relative strength.\n- *Plain*: Flip what’s actually moving; skip the sleepy sets.")
+                lines.append("**Investors**\n- *Tech*: Wait for confirmation.\n- *Plain*: Don’t size up until more of the market participates.")
             elif mo3 <= 0 and yoy >= 0:
-                lines.append("**Collectors:** Patience — strength may rotate; set bids in historically softer months.")
-                lines.append("**Flippers:** Short-term edge is fading — tighten risk and shorten holding periods.")
-                lines.append("**Investors:** Maintain core exposure, add only on broadening breadth or fresh highs.")
+                lines.append("**Collectors**\n- *Tech*: Rotation/digestion.\n- *Plain*: Let prices come to you; set patient bids.")
+                lines.append("**Flippers**\n- *Tech*: Short-term edge fading.\n- *Plain*: Tighter margins — keep holds shorter.")
+                lines.append("**Investors**\n- *Tech*: Maintain core, add on breadth upticks.\n- *Plain*: No need to bail, but wait for the next push to add.")
             else:
-                lines.append("**Collectors:** Build PC in weakness; negotiate aggressively in cooling categories.")
-                lines.append("**Flippers:** Capital preservation first; wait for momentum to re-accelerate.")
-                lines.append("**Investors:** Keep powder dry; watch for a **breadth thrust** or MACD resets.")
-            lines.append(f"**Seasonality hint:** Historically softer pricing in **{weak_m}** and stronger demand in **{strong_m}**.")
+                lines.append("**Collectors**\n- *Tech*: Build PC in weakness.\n- *Plain*: Bargain hunt, negotiate hard.")
+                lines.append("**Flippers**\n- *Tech*: Preserve capital.\n- *Plain*: Avoid forcing trades when momentum’s not there.")
+                lines.append("**Investors**\n- *Tech*: Watch for breadth thrust/MACD resets.\n- *Plain*: Keep cash ready; next wave will show itself.")
+            lines.append(f"**Seasonality**\n- *Tech*: Softer in {weak_m}, stronger in {strong_m}.\n- *Plain*: Think bargain hunting in {weak_m}, sell into strength in {strong_m}.")
             return "\n\n".join(lines)
 
         dyn_headline = headline_text(comp_yoy, comp_3mo, breadth_3mo)
@@ -637,10 +615,9 @@ elif page == "Pancake Analytics Trading Card Market Report":
         k3.metric("Breadth (3-Mo > 0)", f"{breadth_3mo:0.0f}%")
         k4.metric("As of", f"{last_row:%b %Y}")
 
-        # Dynamic Headline
         st.markdown(f"### 📰 Headline\n{dyn_headline}")
 
-        # Top Movers
+        # Top Movers (quick tables)
         colt1, colt2 = st.columns(2)
         top_n = 5
         with colt1:
@@ -668,20 +645,17 @@ elif page == "Pancake Analytics Trading Card Market Report":
         )
         st.plotly_chart(fig_sc, use_container_width=True, theme="streamlit")
 
-        # Quick Heat (YoY & 3-Mo)
+        # Quick Heat
         mini = mkt_df[["YoY %","3-Mo %"]]
         fig_mh = go.Figure(data=go.Heatmap(
             z=mini.values, x=mini.columns.tolist(), y=mini.index.tolist(),
             zmin=-20, zmax=20, colorscale="RdYlGn",
             hovertemplate="Category=%{y}<br>%Δ=%{z:.2f}%<extra></extra>"
         ))
-        fig_mh.update_layout(
-            title="Quick Heat – YoY & 3-Mo by Category",
-            margin=dict(l=10, r=10, t=60, b=10)
-        )
+        fig_mh.update_layout(title="Quick Heat – YoY & 3-Mo by Category",
+                             margin=dict(l=10, r=10, t=60, b=10))
         st.plotly_chart(fig_mh, use_container_width=True, theme="streamlit")
 
-        # Dynamic Closing Read
         st.markdown(f"### 🧭 Closing Read\n{dyn_closing}")
 
         # Download snapshot (includes narrative)
@@ -701,7 +675,7 @@ elif page == "Pancake Analytics Trading Card Market Report":
         )
 
 # ─────────────────────────────────────────
-#  PAGE 9 ▸ FLIP FORECAST (Interactive with Plotly)
+#  PAGE 9 ▸ FLIP FORECAST (Interactive + Conversational)
 # ─────────────────────────────────────────
 if page == "Flip Forecast":
     if df_raw is None:
@@ -711,16 +685,13 @@ if page == "Flip Forecast":
 
         sim_category = st.selectbox("Choose Category for Forecast", CATEGORIES, index=CATEGORIES.index(cat1))
 
-        # Preprocess selected category
         d = preprocess(df_raw, sim_category).sort_values("Month_Year")
         d["pct_change"] = d["market_value"].pct_change()
         d = d.dropna()
 
-        # Expected return & capped vol
         expected_return = d["pct_change"].mean()
         monthly_volatility = min(max(d["pct_change"].std(), 0.01), 0.30)
 
-        # Seasonality pattern
         d["Month"] = d["Month_Year"].dt.strftime("%B")
         month_avg = d.groupby("Month")["market_value"].mean()
         seasonality = (month_avg / month_avg.mean()).reindex(
@@ -728,13 +699,11 @@ if page == "Flip Forecast":
              "July","August","September","October","November","December"]
         ).fillna(1)
 
-        # Transparency for inputs
         real_3mo_avg = d["market_value"].tail(3).mean()
         latest_market_value = d["market_value"].iloc[-1]
         st.write(f"Latest Market Value for {sim_category}: ${latest_market_value:.2f}")
         st.write(f"Computed 3-Month Average: ${real_3mo_avg:.2f}")
 
-        # Inputs
         st.markdown("---")
         st.markdown("#### Your Card Details")
         asking_price   = st.number_input("Your Asking Price ($)",   min_value=0.0, value=100.0, step=1.0)
@@ -751,24 +720,19 @@ if page == "Flip Forecast":
 
         initial_price = avg_3mo_price
 
-        # Monte Carlo simulation
+        # Monte Carlo simulation (vector-friendly loop)
         rng = np.random.default_rng()
         results = np.empty((num_simulations, num_months + 1), dtype=float)
         results[:, 0] = initial_price
-
-        # Precompute seasonality multipliers for steps
         season_steps = np.array([seasonality.iloc[m % 12] for m in range(num_months)], dtype=float)
-
         for i in range(num_simulations):
             for m in range(num_months):
                 rand_return = rng.normal(expected_return, monthly_volatility)
                 results[i, m+1] = results[i, m] * (1 + rand_return * season_steps[m])
 
         months_ahead = np.arange(num_months + 1)
-
-        # Percentile fan (10–90 and median)
         p10 = np.percentile(results, 10, axis=0)
-        p50 = np.percentile(results, 50, axis=0)  # median
+        p50 = np.percentile(results, 50, axis=0)
         p90 = np.percentile(results, 90, axis=0)
 
         # Paths + percentile band
@@ -813,19 +777,13 @@ if page == "Flip Forecast":
         final_prices = results[:, -1]
         median_final = float(np.median(final_prices))
         fig_hist = go.Figure()
-        fig_hist.add_trace(go.Histogram(
-            x=final_prices, nbinsx=40, name="Final prices",
-            hovertemplate="Count=%{y}<br>Price=$%{x:.2f}<extra></extra>"
-        ))
-        fig_hist.add_vline(x=median_final, line_dash="dash",
-                           annotation_text=f"Median ${median_final:,.2f}")
-        fig_hist.add_vline(x=asking_price, line_dash="dot",
-                           annotation_text=f"Asking ${asking_price:,.2f}")
-        fig_hist.update_layout(
-            title="Distribution of Final Prices",
-            xaxis_title="Price ($)", yaxis_title="Count",
-            bargap=0.05, margin=dict(l=10, r=10, t=60, b=10)
-        )
+        fig_hist.add_trace(go.Histogram(x=final_prices, nbinsx=40, name="Final prices",
+                                        hovertemplate="Count=%{y}<br>Price=$%{x:.2f}<extra></extra>"))
+        fig_hist.add_vline(x=median_final, line_dash="dash", annotation_text=f"Median ${median_final:,.2f}")
+        fig_hist.add_vline(x=asking_price, line_dash="dot", annotation_text=f"Asking ${asking_price:,.2f}")
+        fig_hist.update_layout(title="Distribution of Final Prices",
+                               xaxis_title="Price ($)", yaxis_title="Count",
+                               bargap=0.05, margin=dict(l=10, r=10, t=60, b=10))
         st.plotly_chart(fig_hist, use_container_width=True, theme="streamlit")
 
         st.download_button(
@@ -835,7 +793,6 @@ if page == "Flip Forecast":
             mime="text/csv"
         )
 
-        # Stats
         prob_hit_ask = np.mean(final_prices >= asking_price) * 100
         percentiles = [5, 25, 50, 75, 95]
         roi_prices = {p: np.percentile(final_prices, p) for p in percentiles}
@@ -852,6 +809,11 @@ if page == "Flip Forecast":
             **{f"{p}th Percentile Price": f"${roi_prices[p]:.2f}" for p in percentiles},
             **roi_calc
         })
+        st.markdown(
+            "**Tech:** Monte Carlo using historical drift/vol; seasonality shapes the path distribution.\n\n"
+            "**Plain:** We simulate a bunch of ‘what if’ price paths. The fan shows most-likely zones, the histogram shows how those paths end. "
+            "If your asking price sits right of the median, it’s a tougher ask; left of it means odds are friendlier."
+        )
 
 #  FOOTER
 # ─────────────────────────────────────────
