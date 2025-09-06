@@ -2,7 +2,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # kept for a few legacy charts
+import plotly.graph_objects as go
 
 # ─────────────────────────────────────────
 #  HEADER
@@ -64,15 +65,41 @@ def preprocess(df, cat):
     d["Month_Year"] = pd.to_datetime(d["Month"] + " " + d["Year"].astype(str))
     return d.groupby("Month_Year")["market_value"].mean().reset_index()
 
-def forecast(df):
-    model = ExponentialSmoothing(df.market_value, trend="add",
-                                 seasonal="add", seasonal_periods=12).fit()
-    fc = model.forecast(12)
-    ci = 1.96 * np.std(model.resid)
+def forecast(df, horizon=12, seasonal_periods=12, trend="add", seasonal="add", ci_level=0.95):
+    """
+    Holt-Winters forecast with simple residual-based CI.
+    Returns (hist_df, fc_df, tidy_hist, tidy_fc).
+    """
+    y = df.market_value.astype(float)
+    model = ExponentialSmoothing(y, trend=trend, seasonal=seasonal,
+                                 seasonal_periods=seasonal_periods).fit()
+
+    fc = model.forecast(horizon)
+
+    # z multipliers for common CI levels
+    z_table = {0.80:1.2816, 0.90:1.6449, 0.95:1.9600, 0.98:2.3263, 0.99:2.5758}
+    z = z_table.get(round(ci_level, 2), 1.96)
+    ci = z * np.std(model.resid)
+
     future = pd.date_range(df.Month_Year.iloc[-1] + pd.DateOffset(months=1),
-                           periods=12, freq="MS")
-    return pd.DataFrame({"Date":future,"Forecast":fc,
-                         "Upper":fc+ci,"Lower":fc-ci})
+                           periods=horizon, freq="MS")
+    fc_df = pd.DataFrame({
+        "Date": future,
+        "Forecast": fc,
+        "Upper": fc + ci,
+        "Lower": fc - ci
+    })
+
+    hist_df = pd.DataFrame({
+        "Date": df.Month_Year,
+        "Historical": df.market_value.values
+    })
+
+    # Optional tidy frames if needed
+    tidy_hist = hist_df.melt(id_vars="Date", var_name="Series", value_name="Value")
+    tidy_fc   = fc_df.melt(id_vars="Date", var_name="Series", value_name="Value")
+
+    return hist_df, fc_df, tidy_hist, tidy_fc
 
 def macd(df):
     s = df.market_value.ewm(span=12,adjust=False).mean()
@@ -114,40 +141,141 @@ if page == "Category Analysis":
             d = preprocess(df_raw, cat)
             st.subheader(cat)
 
-            # Forecast
-            fc_df = forecast(d)
+            # ── Forecast (interactive Plotly) ─────────────────────────────
+            with st.expander("Forecast settings", expanded=False):
+                horizon = st.slider("Horizon (months)", 6, 24, 12, step=1, key=f"h_{cat}")
+                ci = st.select_slider("Confidence interval", options=[0.80,0.90,0.95,0.98,0.99],
+                                      value=0.95, key=f"ci_{cat}")
+                hw_trend = st.selectbox("Trend", ["add","mul"], index=0, key=f"t_{cat}")
+                hw_seasonal = st.selectbox("Seasonal", ["add","mul"], index=0, key=f"s_{cat}")
+                sp = st.number_input("Seasonal periods", min_value=4, max_value=24, value=12, step=1, key=f"sp_{cat}")
+
+            hist_df, fc_df, _, _ = forecast(d, horizon=horizon,
+                                             seasonal_periods=sp,
+                                             trend=hw_trend, seasonal=hw_seasonal,
+                                             ci_level=ci)
+
             pct = (fc_df.Forecast.iloc[-1]-d.market_value.iloc[-1])/d.market_value.iloc[-1]*100
-            fig,ax=plt.subplots(); ax.plot(d.Month_Year,d.market_value,label="Historical")
-            ax.plot(fc_df.Date,fc_df.Forecast,label="Forecast")
-            ax.fill_between(fc_df.Date,fc_df.Lower,fc_df.Upper,alpha=.2)
-            ax.set_title("12-Month Forecast"); ax.legend()
-            st.pyplot(fig)
-            st.markdown(
-                "**How to read** – Blue = history, orange = forecast, shaded band = ±1.96σ.\n\n"
-                f"*Collector example:* Forecast shows **{pct:+.1f}%** change for {cat}. "
-                "This value is a projection for the next 12 calendar months.*"
+
+            fig = go.Figure()
+
+            # Historical line
+            fig.add_trace(go.Scatter(
+                x=hist_df["Date"], y=hist_df["Historical"],
+                mode="lines", name="Historical",
+                hovertemplate="Date=%{x|%b %Y}<br>Value=%{y:.2f}<extra></extra>"
+            ))
+
+            # Forecast line
+            fig.add_trace(go.Scatter(
+                x=fc_df["Date"], y=fc_df["Forecast"],
+                mode="lines", name="Forecast",
+                line=dict(dash="dash"),
+                hovertemplate="Date=%{x|%b %Y}<br>Forecast=%{y:.2f}<extra></extra>"
+            ))
+
+            # Confidence band
+            fig.add_trace(go.Scatter(
+                x=pd.concat([fc_df["Date"], fc_df["Date"][::-1]]),
+                y=pd.concat([fc_df["Upper"], fc_df["Lower"][::-1]]),
+                fill="toself",
+                fillcolor="rgba(66, 135, 245, 0.15)",
+                line=dict(color="rgba(66,135,245,0)"),
+                name=f"{int(ci*100)}% interval",
+                hoverinfo="skip",
+                showlegend=True
+            ))
+
+            fig.update_layout(
+                title=f"{horizon}-Month Holt-Winters Forecast",
+                xaxis_title="Month",
+                yaxis_title="Market Value",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=10, r=10, t=50, b=10),
             )
 
-            # MACD Trend
+            st.plotly_chart(fig, use_container_width=True, theme="streamlit")
+
+            # Download forecast data
+            csv = pd.concat([
+                hist_df.rename(columns={"Historical":"Value"}).assign(Series="Historical"),
+                fc_df.rename(columns={"Forecast":"Value"})[["Date","Value"]].assign(Series="Forecast")
+            ]).sort_values("Date").to_csv(index=False)
+
+            st.download_button(
+                "⬇️ Download forecast data (CSV)",
+                data=csv,
+                file_name=f"{cat.replace(' ','_').lower()}_holtwinters_forecast.csv",
+                mime="text/csv",
+                key=f"dlfc_{cat}"
+            )
+
+            st.markdown(
+                "**How to read** – Hover to see exact values; use the toolbar to zoom/pan; "
+                "toggle series with the legend. Shaded area is your confidence band.\n\n"
+                f"*Collector example:* Forecast shows **{pct:+.1f}%** change for {cat} over the next {horizon} months.*"
+            )
+
+            # ── MACD Trend (Plotly) ───────────────────────────────────────
             macd_line, signal_line, bucket = macd(d)
-            fig2,ax2=plt.subplots(); ax2.plot(d.Month_Year,macd_line,label="MACD")
-            ax2.plot(d.Month_Year,signal_line,label="Signal")
-            ax2.axhline(0,color="gray",ls="--",lw=.7)
-            ax2.set_title(f"MACD Trend – bucket: {bucket.iloc[-1]} (Y-axis = MACD value)")
-            ax2.legend(); st.pyplot(fig2)
+            macd_df = pd.DataFrame({
+                "Date": d.Month_Year,
+                "MACD": macd_line.values,
+                "Signal": signal_line.values
+            })
+
+            fig_macd = go.Figure()
+
+            fig_macd.add_trace(go.Scatter(
+                x=macd_df["Date"], y=macd_df["MACD"],
+                mode="lines", name="MACD",
+                hovertemplate="Date=%{x|%b %Y}<br>MACD=%{y:.3f}<extra></extra>"
+            ))
+            fig_macd.add_trace(go.Scatter(
+                x=macd_df["Date"], y=macd_df["Signal"],
+                mode="lines", name="Signal",
+                hovertemplate="Date=%{x|%b %Y}<br>Signal=%{y:.3f}<extra></extra>"
+            ))
+
+            # Zero line
+            fig_macd.add_hline(y=0, line_width=1, line_dash="dash", opacity=0.6)
+
+            fig_macd.update_layout(
+                title=f"MACD Trend – bucket: {bucket.iloc[-1]}",
+                xaxis_title="Month",
+                yaxis_title="MACD value",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(l=10, r=10, t=50, b=10),
+            )
+
+            st.plotly_chart(fig_macd, use_container_width=True, theme="streamlit")
             st.markdown(
                 "**How to read** – MACD above Signal & 0 ⇒ upbeat momentum; below 0 ⇒ downtrend.\n\n"
                 "*Collector example:* MACD just crossed above zero on Marvel cards—grab key cards "
                 "before the uptrend is obvious.*"
             )
 
-            # Seasonality
-            d["Month"]=d.Month_Year.dt.month_name()
-            month_avg=d.groupby("Month").market_value.mean().reindex(
-                ["January","February","March","April","May","June",
-                 "July","August","September","October","November","December"])
-            fig3,ax3=plt.subplots(); month_avg.plot(kind="bar",ax=ax3)
-            ax3.set_title("Average Value by Month"); st.pyplot(fig3)
+            # ── Seasonality (Plotly) ──────────────────────────────────────
+            d["Month"] = d.Month_Year.dt.month_name()
+            month_order = ["January","February","March","April","May","June",
+                           "July","August","September","October","November","December"]
+            month_avg = (d.groupby("Month").market_value.mean()
+                           .reindex(month_order))
+
+            fig_seas = go.Figure()
+            fig_seas.add_trace(go.Bar(
+                x=month_avg.index, y=month_avg.values, name="Avg Value by Month",
+                hovertemplate="Month=%{x}<br>Avg=%{y:.2f}<extra></extra>"
+            ))
+
+            fig_seas.update_layout(
+                title="Average Value by Month (Seasonality)",
+                xaxis_title="Month",
+                yaxis_title="Average Value",
+                margin=dict(l=10, r=10, t=50, b=10)
+            )
+
+            st.plotly_chart(fig_seas, use_container_width=True, theme="streamlit")
             st.markdown(
                 "**How to read** – Short bars = historically cheaper months.\n\n"
                 "*Collector example:* Star Wars shows its lowest average in **July**. "
@@ -222,9 +350,12 @@ elif page == "State of Market":
             y,r=yoy_3mo(s,latest); yoy.append(y); mo3.append(r)
         mkt=pd.DataFrame({"YoY %":yoy,"3-Mo %":mo3},index=CATEGORIES)
         st.subheader("State of Market – Momentum Snapshot")
+
+        # Keep Matplotlib here or convert to Plotly if you prefer
         fig,ax=plt.subplots(); mkt.plot(kind="bar",ax=ax); ax.axhline(0,color="gray",ls="--")
         ax.set_ylabel("%"); ax.set_title(f"Blue = YoY  |  Orange = 3-Mo  (to {latest:%b %Y})")
         st.pyplot(fig)
+
         st.markdown(
             "**How to read** – Two positives = heating; two negatives = cooling.\n\n"
             "*Collector example:* Pokémon is −8 % YoY but +9 % 3-Mo — buy before next bull run.*"
@@ -291,31 +422,43 @@ elif page == "Custom Index Builder":
         )
 
 # ─────────────────────────────────────────
-#  PAGE 5 ▸ SEASONALITY HEATMAP
+#  PAGE 5 ▸ SEASONALITY HEATMAP (Plotly)
 # ─────────────────────────────────────────
 elif page == "Seasonality HeatMap":
     if df_raw is None:
         st.info("Run the analysis to view seasonality.")
     else:
         st.subheader("Seasonality – Avg Month-to-Month % Change")
+
         df_raw["Month_Year"]=pd.to_datetime(df_raw.Month+" "+df_raw.Year.astype(str))
         df_raw["Month_Num"]=df_raw.Month_Year.dt.month
         wide=(df_raw.pivot_table(values="market_value",index="Category",columns="Month_Num",aggfunc="mean")
               .reindex(index=CATEGORIES))
-        pct=wide.pct_change(axis=1)*100
-        fig_h,ax_h=plt.subplots(figsize=(10,4))
-        im=ax_h.imshow(pct,cmap="RdYlGn",vmin=-20,vmax=20,aspect="auto")
-        ax_h.set_xticks(range(12)); ax_h.set_xticklabels(
-            ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"],
-            rotation=45,ha="right")
-        ax_h.set_yticks(range(len(CATEGORIES))); ax_h.set_yticklabels(CATEGORIES)
-        fig_h.colorbar(im,ax=ax_h,label="% change")
-        st.pyplot(fig_h)
+        pct=(wide.pct_change(axis=1)*100).round(2)
+
+        # Build Plotly Heatmap
+        month_labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+        fig_hm = go.Figure(data=go.Heatmap(
+            z=pct.values,
+            x=month_labels,
+            y=pct.index.tolist(),
+            zmin=-20, zmax=20,
+            colorscale="RdYlGn",
+            hovertemplate="Category=%{y}<br>Month=%{x}<br>%Δ=%{z:.2f}%<extra></extra>"
+        ))
+        fig_hm.update_layout(
+            title="Seasonality Heatmap – Avg MoM % Change",
+            xaxis_title="Month",
+            yaxis_title="Category",
+            margin=dict(l=10, r=10, t=50, b=10)
+        )
+        st.plotly_chart(fig_hm, use_container_width=True, theme="streamlit")
+
+        st.dataframe(pct.fillna("—"),use_container_width=True,height=300)
         st.markdown(
             "**How to read** – Red months = typical dips.\n\n"
             "*Collector example:* Marvel is red in November — hit Black-Friday deals for CGC slabs.*"
         )
-        st.dataframe(pct.round(2).fillna("—"),use_container_width=True,height=300)
 
 # ─────────────────────────────────────────
 #  PAGE 6 ▸ ROLLING VOLATILITY
@@ -349,18 +492,20 @@ elif page == "Correlation Matrix":
         wide=(df_raw.pivot_table(values="market_value",index="Month_Year",
                                  columns="Category",aggfunc="mean").sort_index())
         corr=wide.pct_change().dropna().corr()
+
+        # Keep matplotlib heatmap or convert similarly to Plotly if desired
         fig_c,ax_c=plt.subplots(figsize=(6,4.5))
         im=ax_c.imshow(corr,cmap="RdYlGn",vmin=-1,vmax=1)
         ax_c.set_xticks(range(len(CATEGORIES))); ax_c.set_xticklabels(CATEGORIES,rotation=45,ha="right")
         ax_c.set_yticks(range(len(CATEGORIES))); ax_c.set_yticklabels(CATEGORIES)
         fig_c.colorbar(im,ax=ax_c,label="ρ"); st.pyplot(fig_c)
+
         st.markdown(
             "**How to read** – Green ≈ +1 = move together; red ≈ −1 = opposite.\n\n"
             "*Collector example:* Marvel’s near-zero correlation with Baseball means a downturn in Topps Chrome won’t drag down your Spidey collection.*"
         )
         st.dataframe(corr.round(2),use_container_width=True,height=300)
 
-# ─────────────────────────────────────────
 # ─────────────────────────────────────────
 #  FLIP FORECAST MODULE (Formerly Monte Carlo)
 # ─────────────────────────────────────────
@@ -371,20 +516,8 @@ if page == "Flip Forecast":
         st.subheader("🔄 Flip Forecast – Projecting Future Card Value")
 
         st.markdown("""
-        **Why it's called Flip Forecast**
-
-        This tool was inspired by two things collectors love: flipping cards and flipping pancakes.
-        It's called **Flip Forecast** because it helps you explore the possible future sale values of your card —
-        whether you're holding or looking for the perfect flip opportunity.
-
-        The model behind this tool is a **Monte Carlo simulation** — a method that simulates hundreds or thousands of
-        possible price paths based on historical trends, volatility, and seasonality. Think of it like pressure-testing
-        your future: how often will your card hit your target sale price?
-
-        Originally showcased and pressure tested at **Tampa Bay Comic Convention 2025**, the Flip Forecast was
-        met with positive feedback from collectors. Based on that feedback, this simulation has been expanded to
-        cover **all categories**, not just Pokémon, and is now available in the full production version of Cardboard Compass.
-        """)
+This tool simulates possible future prices based on historical trend, volatility, and seasonality.
+""")
 
         # User selects category
         sim_category = st.selectbox("Choose Category for Forecast", CATEGORIES, index=CATEGORIES.index(cat1))
@@ -399,7 +532,7 @@ if page == "Flip Forecast":
         expected_return = d["pct_change"].mean()
         monthly_volatility = min(max(d["pct_change"].std(), 0.01), 0.30)
 
-        # Get seasonality pattern
+        # Seasonality pattern
         d["Month"] = d["Month_Year"].dt.strftime("%B")
         month_avg = d.groupby("Month")["market_value"].mean()
         seasonality = month_avg / month_avg.mean()
@@ -407,7 +540,7 @@ if page == "Flip Forecast":
                        "July","August","September","October","November","December"]
         seasonality = seasonality.reindex(month_order).fillna(1)
 
-        # Compute the real 3-month average from data
+        # 3-month average & latest value
         real_3mo_avg= d["market_value"].tail(3).mean()
         latest_market_value = d["market_value"].iloc[-1]
 
@@ -427,11 +560,10 @@ if page == "Flip Forecast":
         num_simulations = st.slider("Number of Simulations", 100, 100000, 500, step=100)
 
         initial_price = avg_3mo_price
-        
 
         # Flip Forecast Simulation
         results = []
-        for i in range(num_simulations):
+        for _ in range(num_simulations):
             prices = [initial_price]
             for m in range(num_months):
                 seasonal_adj = seasonality.iloc[m % 12]
@@ -442,7 +574,7 @@ if page == "Flip Forecast":
 
         results = np.array(results)
 
-        # Plot simulated paths
+        # Plot simulated paths (kept Matplotlib, can be changed to Plotly if you want)
         st.markdown("---")
         st.markdown("#### Simulated Price Paths")
         fig, ax = plt.subplots(figsize=(10,5))
@@ -452,7 +584,6 @@ if page == "Flip Forecast":
         ax.set_xlabel("Months Ahead")
         ax.set_ylabel("Simulated Price ($)")
         st.pyplot(fig)
-        st.markdown("**How to read** – Each line represents a possible price path for your card over 12 months. The wide spread illustrates market uncertainty and seasonality.")
 
         # Histogram of ending values
         st.markdown("---")
@@ -466,7 +597,6 @@ if page == "Flip Forecast":
         ax2.set_xlabel("Price")
         ax2.legend()
         st.pyplot(fig2)
-        st.markdown("**How to read** – The histogram shows the distribution of final prices after 12 months. The red line shows your asking price; the black dashed line is the median outcome.")
 
         # Probability of hitting asking price
         prob_hit_ask = np.mean(final_prices >= asking_price) * 100
@@ -493,21 +623,6 @@ if page == "Flip Forecast":
             **roi_dict,
             **roi_calc
         })
-
-        st.markdown(
-            f"""
-            **Category Read – {sim_category}:**
-            Over the past year, {sim_category} cards have shown an average monthly growth of **{expected_return:.2%}**, 
-            with monthly volatility capped at **{monthly_volatility:.2%}**. Seasonality plays a role, with some months
-            historically outperforming others.
-
-            **Collector Insight:** Based on {num_simulations} simulations, there's a **{prob_hit_ask:.1f}%** chance
-            your card reaches or exceeds your asking price of **${asking_price:.2f}** within 12 months.
-
-            Understanding ROI potential at different outcomes helps you better price, time, and position your sale.
-            """
-        )
-
 
 #  FOOTER
 # ─────────────────────────────────────────
