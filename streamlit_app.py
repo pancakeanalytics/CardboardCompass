@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 #  HEADER
 # ─────────────────────────────────────────
 st.image(
-    "https://pancakebreakfaststats.com/wp-content/uploads/2025/06/pa.png",
+    "https://pancakebreakfaststats.com/wp-content/uploads/2025/09/pancake_analytics.png",
     use_container_width=True
 )
 st.title("Cardboard Compass")
@@ -178,10 +178,29 @@ if page == "Category Analysis":
                                    margin=dict(l=10, r=10, t=50, b=10))
             st.plotly_chart(fig_macd, use_container_width=True, theme="streamlit")
 
+            # ✅ Clear, actionable read instead of "translate that..."
+            bucket_str = str(bucket.iloc[-1])
+
+            def rule_pair(role: str, b: str) -> str:
+                buy, sell = RULES[role][b]
+                return f"**{role.title()}** — Buy: **{buy}**, Sell: **{sell}**"
+
+            stance_map = {
+                "High Up":  "Press / trend-follow",
+                "Med Up":   "Lean in",
+                "Low Up":   "Accumulate",
+                "Low Down": "Cautious / value hunt",
+                "Med Down": "Reduce risk / tighten",
+                "High Down":"Avoid / sell into strength"
+            }
+            stance = stance_map.get(bucket_str, "Neutral")
+
             st.markdown(
                 "**What the Data Says:** MACD above its signal and > 0 = bullish momentum; below 0 = downtrend.\n\n"
-                f"**What It Means for You:** If the blue line (MACD) is on top and above zero, the wind’s at your back. "
-                f"**{cat}** sits in **{bucket.iloc[-1]}** — translate that to ‘how aggressive should I be?’"
+                f"**What It Means for You:** **{cat}** is **{bucket_str}** → **Stance: {stance}**.\n\n"
+                f"- {rule_pair('collector', bucket_str)}\n"
+                f"- {rule_pair('flipper', bucket_str)}\n"
+                f"- {rule_pair('investor', bucket_str)}"
             )
 
             # Seasonality (interactive)
@@ -579,7 +598,7 @@ elif page == "Pancake Analytics Trading Card Market Report":
     top_yoy_up   = ", ".join(mkt_df.sort_values("YoY %",  ascending=False).head(3).index)
     bottom_3mo   = ", ".join(mkt_df.sort_values("3-Mo %", ascending=True ).head(2).index)
 
-    # ── NEW: Headline components (returns data line + meaning title) ─────
+    # Headline components (data note + slide-style title)
     def headline_components(yoy, mo3, breadth):
         if mo3 >= 2 and yoy >= 0 and breadth >= 60:
             return (
@@ -606,7 +625,7 @@ elif page == "Pancake Analytics Trading Card Market Report":
             "Some tables are buzzing, others are quiet. Pick your spots."
         )
 
-    # ── Dynamic overall take for Closing Read ─────────────────────────────
+    # Dynamic overall take for Closing Read
     def overall_take(yoy, mo3, breadth, strong_m, weak_m):
         yoy = float(yoy) if pd.notna(yoy) else 0.0
         mo3 = float(mo3) if pd.notna(mo3) else 0.0
@@ -640,7 +659,7 @@ elif page == "Pancake Analytics Trading Card Market Report":
             f"Lean into relative strength, bargain hunt in **{weak_m}**, and plan exits into **{strong_m}**."
         )
 
-    # Persona guidance (conversational)
+    # Persona guidance
     def persona_read(yoy, mo3, breadth, strong_m, weak_m):
         blocks = []
 
