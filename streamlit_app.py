@@ -28,7 +28,7 @@ give you the exact price of the card in your hand.*
 def load_data(url: str) -> pd.DataFrame:
     return pd.read_excel(url)
 
-DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2025/08/data_file_008.xlsx"
+DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2025/09/data_file_009.xlsx"
 
 if "df_raw" not in st.session_state:
     if st.button("Run Analysis"):
