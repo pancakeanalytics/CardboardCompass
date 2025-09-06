@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
-import matplotlib.pyplot as plt  # still used in Custom Index; safe to convert to Plotly later
+import matplotlib.pyplot as plt  # used in Custom Index; safe to convert later
 import plotly.graph_objects as go
 
 # ─────────────────────────────────────────
@@ -62,7 +62,7 @@ RULES = {
 # ─────────────────────────────────────────
 def preprocess(df, cat):
     d = df[df["Category"] == cat].copy()
-    d["Month_Year"] = pd.to_datetime(d["Month"] + " " + d["Year"].astype(str))
+    d["Month_Year"] = pd.to_datetime(d["Month"] + " " + df["Year"].astype(str))
     return d.groupby("Month_Year")["market_value"].mean().reset_index()
 
 def forecast(df, horizon=12, seasonal_periods=12, trend="add", seasonal="add", ci_level=0.95):
@@ -84,10 +84,7 @@ def forecast(df, horizon=12, seasonal_periods=12, trend="add", seasonal="add", c
         "Upper": fc + ci,
         "Lower": fc - ci
     })
-    hist_df = pd.DataFrame({
-        "Date": df.Month_Year,
-        "Historical": df.market_value.values
-    })
+    hist_df = pd.DataFrame({"Date": df.Month_Year, "Historical": df.market_value.values})
     return hist_df, fc_df
 
 def macd(df):
@@ -121,7 +118,7 @@ with st.sidebar:
     cat2 = st.selectbox("Compare against", ["None"]+[c for c in CATEGORIES if c!=cat1])
 
 # ─────────────────────────────────────────
-#  PAGE 1 ▸ CATEGORY ANALYSIS (Interactive + Conversational Notes)
+#  PAGE 1 ▸ CATEGORY ANALYSIS
 # ─────────────────────────────────────────
 if page == "Category Analysis":
     if df_raw is None:
@@ -170,8 +167,8 @@ if page == "Category Analysis":
             st.markdown(
                 f"**Tech:** Holt-Winters with {hw_trend} trend & {hw_seasonal} seasonality projects the next {horizon} months; band is ±z·σ of residuals. "
                 f"Latest forecast vs last actual: **{pct:+.1f}%**.\n\n"
-                f"**Plain:** Blue is history, dashed line is where we think prices head next. The shaded area is the wiggle room. "
-                f"For **{cat}**, the model says ~**{pct:+.1f}%** over the next year — treat it as a guide, not gospel."
+                f"**Plain:** Blue is history, dashed line is the model’s path. The shaded part is the wiggle room. "
+                f"For **{cat}**, we’re looking at roughly **{pct:+.1f}%** over the next year — a guide, not gospel."
             )
 
             # MACD Trend
@@ -192,7 +189,7 @@ if page == "Category Analysis":
             st.markdown(
                 "**Tech:** MACD above its signal and > 0 = bullish momentum; below 0 = downtrend.\n\n"
                 f"**Plain:** If the blue line (MACD) is on top and above zero, the wind’s at your back. "
-                f"For **{cat}**, the current bucket is **{bucket.iloc[-1]}** — think ‘how aggressive should I be right now?’"
+                f"**{cat}** sits in **{bucket.iloc[-1]}** — translate that to ‘how aggressive should I be?’"
             )
 
             # Seasonality
@@ -212,7 +209,7 @@ if page == "Category Analysis":
             hi_mo  = month_avg.idxmax() if not month_avg.isna().all() else "December"
             st.markdown(
                 "**Tech:** Monthly mean levels across the full history.\n\n"
-                f"**Plain:** {cat} tends to be cheaper in **{low_mo}** and stronger in **{hi_mo}** — use that to time buys/sells."
+                f"**Plain:** {cat} tends to be cheaper in **{low_mo}** and stronger in **{hi_mo}** — time buys/sells around that."
             )
 
         if cat2 == "None":
@@ -255,11 +252,11 @@ elif page == "Market HeatMap":
         st.markdown(
             "**Tech:** Heatmap of MACD buckets with persona rules.\n\n"
             "**Plain:** Green ‘Yes’ cells are the quick tells. If you collect, look for green in ‘Buy?’; "
-            "if you flip, green in ‘Sell?’ can be your exit signal."
+            "if you flip, green in ‘Sell?’ can be your exit."
         )
 
 # ─────────────────────────────────────────
-#  PAGE 3 ▸ STATE OF MARKET (Interactive + Conversational)
+#  PAGE 3 ▸ STATE OF MARKET
 # ─────────────────────────────────────────
 elif page == "State of Market":
     if df_raw is None:
@@ -300,10 +297,17 @@ elif page == "State of Market":
                           margin=dict(l=10, r=10, t=60, b=10))
         st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
+        # Tech + Plain callouts
+        best_yoy_cat  = mkt.set_index("Category")["YoY %"].idxmax()
+        worst_yoy_cat = mkt.set_index("Category")["YoY %"].idxmin()
+        best_3m_cat   = mkt.set_index("Category")["3-Mo %"].idxmax()
+        worst_3m_cat  = mkt.set_index("Category")["3-Mo %"].idxmin()
         st.markdown(
-            "**Tech:** Bar chart compares long-run YoY vs short-run 3-month momentum by category.\n\n"
-            "**Plain:** Two bars per category — tall positive bars = heat. If 3-Mo is up but YoY is down, "
-            "that’s a classic ‘turning the corner’ setup."
+            f"**Tech:** Side-by-side long-term (YoY) vs short-term (3-Mo) momentum. "
+            f"Leaders — YoY: **{best_yoy_cat}**, 3-Mo: **{best_3m_cat}**. "
+            f"Laggards — YoY: **{worst_yoy_cat}**, 3-Mo: **{worst_3m_cat}**.\n\n"
+            f"**Plain:** The biggest recent push is in **{best_3m_cat}**; year-over-year strength sits with **{best_yoy_cat}**. "
+            f"If you’re holding **{worst_3m_cat}**, you’ve felt the dip — potential buy-the-dip zone if you’re long-term."
         )
 
         st.dataframe(mkt_sorted.round(2), use_container_width=True)
@@ -315,7 +319,7 @@ elif page == "State of Market":
         )
 
 # ─────────────────────────────────────────
-#  PAGE 4 ▸ CUSTOM INDEX BUILDER (kept as-is; add notes)
+#  PAGE 4 ▸ CUSTOM INDEX BUILDER
 # ─────────────────────────────────────────
 elif page == "Custom Index Builder":
     if df_raw is None:
@@ -343,8 +347,8 @@ elif page == "Custom Index Builder":
 
         fig_l,ax_l=plt.subplots()
         custom.plot(ax=ax_l,lw=2,label="My Index")
-        for s,l in zip([poke,tcg,sports,nons],["Pokémon","TCGs","Sports","Non-Sports"]):
-            s.plot(ax=ax_l,alpha=.7,label=l)
+        for s,lbl in zip([poke,tcg,sports,nons],["Pokémon","TCGs","Sports","Non-Sports"]):
+            s.plot(ax=ax_l,alpha=.7,label=lbl)
         ax_l.set_ylabel("Indexed Value"); ax_l.legend(fontsize=8)
         st.pyplot(fig_l)
 
@@ -358,13 +362,12 @@ elif page == "Custom Index Builder":
         st.table(weights.mul(100).round(1).rename("Weight %"))
         st.table(perf)
         st.markdown(
-            "**Tech:** Weighted blend vs reference composites; summary performance metrics.\n\n"
-            "**Plain:** Slide the weights to build ‘your market.’ The table tells you if your blend is beating "
-            "Pokémon-only, TCGs, Sports, or Non-Sports."
+            "**Tech:** Your weighted blend vs reference composites; YoY & 3-Mo performance.\n\n"
+            "**Plain:** Slide the weights to build *your* market. Check if your mix is beating Pokémon-only, TCGs, Sports, or Non-Sports."
         )
 
 # ─────────────────────────────────────────
-#  PAGE 5 ▸ SEASONALITY HEATMAP (Interactive + Conversational)
+#  PAGE 5 ▸ SEASONALITY HEATMAP
 # ─────────────────────────────────────────
 elif page == "Seasonality HeatMap":
     if df_raw is None:
@@ -389,14 +392,21 @@ elif page == "Seasonality HeatMap":
                              margin=dict(l=10, r=10, t=50, b=10))
         st.plotly_chart(fig_hm, use_container_width=True, theme="streamlit")
 
+        # Callouts
+        # across all categories, compute best/worst average month (by avg MoM change mean)
+        row_means = pct.mean(axis=1, numeric_only=True)
+        best_cat = row_means.idxmax()
+        worst_cat = row_means.idxmin()
         st.markdown(
-            "**Tech:** Average sequential % changes by calendar month.\n\n"
-            "**Plain:** Green months = usually stronger; red = softer. Use it to time buying the dips and selling into strength."
+            f"**Tech:** Average sequential % changes by calendar month across categories. "
+            f"Overall seasonal winners: **{best_cat}** (stronger average MoM). Laggard: **{worst_cat}**.\n\n"
+            "**Plain:** Green months = usually stronger; red = softer. Use this to bargain hunt in ‘red’ months "
+            "and sell into ‘green’ months for your category."
         )
         st.dataframe(pct.fillna("—"),use_container_width=True,height=300)
 
 # ─────────────────────────────────────────
-#  PAGE 6 ▸ ROLLING VOLATILITY (Interactive + Conversational)
+#  PAGE 6 ▸ ROLLING VOLATILITY
 # ─────────────────────────────────────────
 elif page == "Rolling Volatility":
     if df_raw is None:
@@ -437,11 +447,11 @@ elif page == "Rolling Volatility":
         )
         st.markdown(
             "**Tech:** CoV = rolling σ / mean. Higher % = bigger swings.\n\n"
-            "**Plain:** Spiky line = bumpy ride. If volatility’s cooling, it’s easier to buy patiently and sell cleanly."
+            "**Plain:** Spikier line = bumpy ride. If volatility cools, it’s easier to buy patiently and sell cleanly."
         )
 
 # ─────────────────────────────────────────
-#  PAGE 7 ▸ CORRELATION MATRIX (Interactive + Conversational)
+#  PAGE 7 ▸ CORRELATION MATRIX
 # ─────────────────────────────────────────
 elif page == "Correlation Matrix":
     if df_raw is None:
@@ -476,13 +486,14 @@ elif page == "Correlation Matrix":
             file_name=f"correlations_{'returns' if basis.startswith('Monthly') else 'levels'}.csv",
             mime="text/csv"
         )
+        # Simple callout on diversification
         st.markdown(
             "**Tech:** ρ near +1 = move together; near −1 = move opposite.\n\n"
-            "**Plain:** Look for green pairs to stack trends, or red pairs to diversify your stash."
+            "**Plain:** Pair high-correlation categories to stack trends; pair low/negative ones to smooth out swings."
         )
 
 # ─────────────────────────────────────────
-#  PAGE 8 ▸ PANCAKE ANALYTICS TRADING CARD MARKET REPORT (Dynamic, Conversational)
+#  PAGE 8 ▸ PANCAKE ANALYTICS TRADING CARD MARKET REPORT (Tech + Plain under each visual)
 # ─────────────────────────────────────────
 elif page == "Pancake Analytics Trading Card Market Report":
     if df_raw is None:
@@ -550,33 +561,32 @@ elif page == "Pancake Analytics Trading Card Market Report":
         weak_month  = month_perf.idxmin() if not month_perf.empty else "July"
         strong_month= month_perf.idxmax() if not month_perf.empty else "December"
 
-        # Movers
+        # Movers and callouts
         top_3mo_up   = ", ".join(mkt_df.sort_values("3-Mo %", ascending=False).head(3).index)
         top_yoy_up   = ", ".join(mkt_df.sort_values("YoY %",  ascending=False).head(3).index)
+        bottom_3mo   = ", ".join(mkt_df.sort_values("3-Mo %", ascending=True ).head(2).index)
 
         # Dynamic Headline (tech + plain English)
         def headline_text(yoy, mo3, breadth):
             if mo3 >= 2 and yoy >= 0 and breadth >= 60:
                 return (
                     "**Tech:** Broadening uptrend — short-term strength with positive YoY; leadership is widening.\n\n"
-                    "**Plain:** Cards aren’t just going up in one or two spots — strength is spreading. "
-                    "Short-term numbers are up and year-over-year is finally turning green. "
-                    "In hobby talk: it’s not just one hot set, the whole market’s heating up."
+                    "**Plain:** It’s not just one hot set — the market’s warming up across the board. Short-term is up, and YoY’s turning green."
                 )
             if mo3 > 0 and yoy < 0 and breadth >= 55:
                 return (
-                    "**Tech:** Early rebound — 3-month momentum turned up while YoY stays negative; improvement is spreading.\n\n"
-                    "**Plain:** Think ‘buying the comeback.’ Prices look cheap vs last year, but the last few months are perking up."
+                    "**Tech:** Early rebound — 3-month momentum positive while YoY remains negative; improvement is spreading.\n\n"
+                    "**Plain:** Comeback vibes — looks cheap vs last year, but the last few months are perking up."
                 )
             if mo3 <= 0 and yoy > 0:
                 return (
                     "**Tech:** Tiring rally — YoY positive but short-term momentum cooled; digestion likely.\n\n"
-                    "**Plain:** Rally caught its breath. Still healthy long-term, a little choppy near-term."
+                    "**Plain:** Still up overall, but the near-term pop is catching its breath."
                 )
             if mo3 < 0 and yoy < 0:
                 return (
                     "**Tech:** Market under pressure — both YoY and 3-month negative.\n\n"
-                    "**Plain:** Softer market. Good for negotiating, tough for quick flips."
+                    "**Plain:** Softer market. Good for negotiating, tougher for quick flips."
                 )
             return (
                 "**Tech:** Mixed setup — signals split across categories.\n\n"
@@ -587,21 +597,21 @@ elif page == "Pancake Analytics Trading Card Market Report":
         def closing_read(yoy, mo3, breadth, strong_m, weak_m):
             lines = []
             if mo3 > 0 and breadth >= 50:
-                lines.append("**Collectors**\n- *Tech*: Hunt +3-Mo but negative YoY.\n- *Plain*: Undervalued but waking up — grab them before the crowd does.")
-                lines.append("**Flippers**\n- *Tech*: Upper-right quadrant (YoY & 3-Mo > 0).\n- *Plain*: Ride the hot hands, manage risk with stops.")
+                lines.append("**Collectors**\n- *Tech*: Hunt +3-Mo but negative YoY.\n- *Plain*: Undervalued but waking up — grab before the crowd.")
+                lines.append("**Flippers**\n- *Tech*: Focus upper-right (YoY & 3-Mo > 0).\n- *Plain*: Ride the hot hands; use stops.")
                 lines.append("**Investors**\n- *Tech*: Breadth > 50% supports trend.\n- *Plain*: When most categories rise, staying invested makes sense.")
             elif mo3 > 0 and breadth < 50:
-                lines.append("**Collectors**\n- *Tech*: Improvement is narrow.\n- *Plain*: Only a few lanes are hot — stick to liquid, iconic cards.")
-                lines.append("**Flippers**\n- *Tech*: Focus on relative strength.\n- *Plain*: Flip what’s actually moving; skip the sleepy sets.")
-                lines.append("**Investors**\n- *Tech*: Wait for confirmation.\n- *Plain*: Don’t size up until more of the market participates.")
+                lines.append("**Collectors**\n- *Tech*: Improvement is narrow.\n- *Plain*: Only a few lanes are hot — stick to the blue chips.")
+                lines.append("**Flippers**\n- *Tech*: Relative strength only.\n- *Plain*: Flip what’s moving; skip sleepy sets.")
+                lines.append("**Investors**\n- *Tech*: Wait for confirmation.\n- *Plain*: Don’t size up until breadth expands.")
             elif mo3 <= 0 and yoy >= 0:
                 lines.append("**Collectors**\n- *Tech*: Rotation/digestion.\n- *Plain*: Let prices come to you; set patient bids.")
-                lines.append("**Flippers**\n- *Tech*: Short-term edge fading.\n- *Plain*: Tighter margins — keep holds shorter.")
-                lines.append("**Investors**\n- *Tech*: Maintain core, add on breadth upticks.\n- *Plain*: No need to bail, but wait for the next push to add.")
+                lines.append("**Flippers**\n- *Tech*: Short-term edge fading.\n- *Plain*: Tighter margins — shorten holds.")
+                lines.append("**Investors**\n- *Tech*: Maintain core; add on breadth upticks.\n- *Plain*: Hold the base, add on the next push.")
             else:
-                lines.append("**Collectors**\n- *Tech*: Build PC in weakness.\n- *Plain*: Bargain hunt, negotiate hard.")
-                lines.append("**Flippers**\n- *Tech*: Preserve capital.\n- *Plain*: Avoid forcing trades when momentum’s not there.")
-                lines.append("**Investors**\n- *Tech*: Watch for breadth thrust/MACD resets.\n- *Plain*: Keep cash ready; next wave will show itself.")
+                lines.append("**Collectors**\n- *Tech*: Build PC in weakness.\n- *Plain*: Bargain hunt and negotiate hard.")
+                lines.append("**Flippers**\n- *Tech*: Preserve capital.\n- *Plain*: Avoid forcing trades without momentum.")
+                lines.append("**Investors**\n- *Tech*: Watch for breadth thrust/MACD resets.\n- *Plain*: Keep cash ready; the next wave will show itself.")
             lines.append(f"**Seasonality**\n- *Tech*: Softer in {weak_m}, stronger in {strong_m}.\n- *Plain*: Think bargain hunting in {weak_m}, sell into strength in {strong_m}.")
             return "\n\n".join(lines)
 
@@ -615,9 +625,10 @@ elif page == "Pancake Analytics Trading Card Market Report":
         k3.metric("Breadth (3-Mo > 0)", f"{breadth_3mo:0.0f}%")
         k4.metric("As of", f"{last_row:%b %Y}")
 
+        # ── Narrative: Headline (Tech + Plain)
         st.markdown(f"### 📰 Headline\n{dyn_headline}")
 
-        # Top Movers (quick tables)
+        # ── Top Movers (tables)
         colt1, colt2 = st.columns(2)
         top_n = 5
         with colt1:
@@ -627,7 +638,16 @@ elif page == "Pancake Analytics Trading Card Market Report":
             st.markdown("**Top ↑ YoY**")
             st.table(mkt_df.sort_values("YoY %", ascending=False).head(top_n).round(2))
 
-        # Momentum Map
+        # Add Tech + Plain under movers
+        st.markdown(
+            f"**Tech:** Sorted leaders — 3-Mo: {top_3mo_up}. YoY: {top_yoy_up}. "
+            f"Laggards on recent momentum: {bottom_3mo}.\n\n"
+            f"**Plain:** Last 3 months, **{top_3mo_up}** have the hot hand. "
+            f"On a 1-year view, **{top_yoy_up}** hold up best. "
+            f"If you’re in **{bottom_3mo}**, you’ve felt the softness — could be a buyer’s window if you believe the rebound."
+        )
+
+        # ── Momentum Map (scatter)
         fig_sc = go.Figure()
         fig_sc.add_trace(go.Scatter(
             x=mkt_df["3-Mo %"], y=mkt_df["YoY %"], mode="markers+text",
@@ -645,17 +665,42 @@ elif page == "Pancake Analytics Trading Card Market Report":
         )
         st.plotly_chart(fig_sc, use_container_width=True, theme="streamlit")
 
-        # Quick Heat
+        # Add Tech + Plain under scatter, with quadrant callouts
+        best_q = mkt_df[(mkt_df["3-Mo %"] > 0) & (mkt_df["YoY %"] > 0)].index.tolist()
+        weak_q = mkt_df[(mkt_df["3-Mo %"] < 0) & (mkt_df["YoY %"] < 0)].index.tolist()
+        plain_best = ", ".join(best_q) if best_q else "None"
+        plain_weak = ", ".join(weak_q) if weak_q else "None"
+        st.markdown(
+            f"**Tech:** Quadrant view — upper-right = positive YoY & 3-Mo (trend in force); "
+            f"lower-left = negative both (under pressure).\n\n"
+            f"**Plain:** Firing on both cylinders: **{plain_best}**. Cooling in both views: **{plain_weak}**. "
+            "Everything else is either bouncing off lows or catching its breath."
+        )
+
+        # ── Quick Heat (YoY & 3-Mo)
         mini = mkt_df[["YoY %","3-Mo %"]]
         fig_mh = go.Figure(data=go.Heatmap(
             z=mini.values, x=mini.columns.tolist(), y=mini.index.tolist(),
             zmin=-20, zmax=20, colorscale="RdYlGn",
             hovertemplate="Category=%{y}<br>%Δ=%{z:.2f}%<extra></extra>"
         ))
-        fig_mh.update_layout(title="Quick Heat – YoY & 3-Mo by Category",
-                             margin=dict(l=10, r=10, t=60, b=10))
+        fig_mh.update_layout(
+            title="Quick Heat – YoY & 3-Mo by Category",
+            margin=dict(l=10, r=10, t=60, b=10)
+        )
         st.plotly_chart(fig_mh, use_container_width=True, theme="streamlit")
 
+        best_yoy = mkt_df["YoY %"].idxmax()
+        worst_yoy = mkt_df["YoY %"].idxmin()
+        best_3mo = mkt_df["3-Mo %"].idxmax()
+        worst_3mo = mkt_df["3-Mo %"].idxmin()
+        st.markdown(
+            f"**Tech:** Heatmap scaled −20% to +20% highlights relative strength short vs long horizon.\n\n"
+            f"**Plain:** Brightest greens = winners — **{best_yoy}** (YoY), **{best_3mo}** (3-Mo). "
+            f"Reds mark soft spots — **{worst_yoy}** (YoY), **{worst_3mo}** (3-Mo)."
+        )
+
+        # ── Closing Read (Tech + Plain)
         st.markdown(f"### 🧭 Closing Read\n{dyn_closing}")
 
         # Download snapshot (includes narrative)
@@ -675,7 +720,7 @@ elif page == "Pancake Analytics Trading Card Market Report":
         )
 
 # ─────────────────────────────────────────
-#  PAGE 9 ▸ FLIP FORECAST (Interactive + Conversational)
+#  PAGE 9 ▸ FLIP FORECAST
 # ─────────────────────────────────────────
 if page == "Flip Forecast":
     if df_raw is None:
@@ -720,7 +765,6 @@ if page == "Flip Forecast":
 
         initial_price = avg_3mo_price
 
-        # Monte Carlo simulation (vector-friendly loop)
         rng = np.random.default_rng()
         results = np.empty((num_simulations, num_months + 1), dtype=float)
         results[:, 0] = initial_price
@@ -810,9 +854,9 @@ if page == "Flip Forecast":
             **roi_calc
         })
         st.markdown(
-            "**Tech:** Monte Carlo using historical drift/vol; seasonality shapes the path distribution.\n\n"
-            "**Plain:** We simulate a bunch of ‘what if’ price paths. The fan shows most-likely zones, the histogram shows how those paths end. "
-            "If your asking price sits right of the median, it’s a tougher ask; left of it means odds are friendlier."
+            "**Tech:** Monte Carlo with historical drift/vol; seasonality shapes monthly steps.\n\n"
+            "**Plain:** We simulate a bunch of ‘what if’ price paths. The fan shows likely zones; the histogram shows where you might land. "
+            "If your ask sits right of the median, it’s a stretch; left of it means odds are friendlier."
         )
 
 #  FOOTER
