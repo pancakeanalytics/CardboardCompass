@@ -141,7 +141,7 @@ st.markdown(
 # ============================================================
 # DATA LOADING
 # ============================================================
-DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/06/data_file_018.xlsx"
+DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/07/data_file_019.xlsx"
 
 @st.cache_data
 def load_data(url: str) -> pd.DataFrame:
