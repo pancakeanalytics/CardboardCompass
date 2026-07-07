@@ -3,20 +3,21 @@ import pandas as pd
 import numpy as np
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import plotly.graph_objects as go
-import plotly.io as pio
 from datetime import datetime
+
 
 # ============================================================
 # CONFIG
 # ============================================================
 st.set_page_config(page_title="Cardboard Compass", layout="wide")
 
+
 # ============================================================
-# THEME (OPTION B — distinct from blue/green)
+# THEME
 # ============================================================
 THEME = {
-    "primary": "#6D5EF7",     # violet
-    "secondary": "#8B7CFF",   # lighter violet
+    "primary": "#6D5EF7",
+    "secondary": "#8B7CFF",
     "accent_red": "#FF4D4D",
     "bg": "#F6F7FB",
     "card": "#FFFFFF",
@@ -29,8 +30,9 @@ THEME = {
 APP_TITLE = "CARDBOARD COMPASS"
 APP_SUBTITLE = "eBay market-index insights — built by Pancake Analytics"
 
+
 # ============================================================
-# GLOBAL CSS (includes slide/print + animations)
+# GLOBAL CSS
 # ============================================================
 st.markdown(
     f"""
@@ -40,7 +42,6 @@ st.markdown(
       h1,h2,h3,h4 {{ color: {THEME['text']}; }}
       .muted {{ color: {THEME['muted']}; font-size: 0.90rem; }}
 
-      /* Cards */
       .pa-card {{
         background: {THEME['card']};
         border: 1px solid {THEME['border']};
@@ -49,7 +50,6 @@ st.markdown(
         box-shadow: 0 4px 12px rgba(0,0,0,0.04);
       }}
 
-      /* Header bar (prevents cutoff) */
       .pa-header {{
         border-radius: 18px;
         overflow: hidden;
@@ -96,7 +96,6 @@ st.markdown(
         letter-spacing: 0.3px;
       }}
 
-      /* Fade-in animation for section transitions */
       .fade-in {{
         animation: fadeIn 0.45s ease-in-out;
       }}
@@ -105,22 +104,17 @@ st.markdown(
         to   {{ opacity: 1; transform: translateY(0); }}
       }}
 
-      /* Remove iframe rounding artifacts */
       iframe {{ border-radius: 12px; }}
 
-      /* STREAMLIT TABLE SCROLL FIXES:
-         - st.dataframe is inherently scrollable; use st.table for "no scrolling" requirements */
       div[data-testid="stDataFrame"] > div {{
         overflow: auto;
       }}
 
-      /* Slide mode container */
       .slide-wrap {{
         max-width: 1180px;
         margin: 0 auto;
       }}
 
-      /* Print rules — "export-ready PDF layout" */
       @media print {{
         header, footer, [data-testid="stSidebar"], [data-testid="stToolbar"] {{
           display: none !important;
@@ -138,48 +132,111 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 # ============================================================
 # DATA LOADING
 # ============================================================
 DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/07/data_file_019.xlsx"
 
-@st.cache_data
+
+@st.cache_data(show_spinner=False)
 def load_data(url: str) -> pd.DataFrame:
-    return pd.read_excel(url)
+    df = pd.read_excel(url).copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    df["Category"] = df["Category"].astype(str).str.strip()
+    df["Month"] = df["Month"].astype(str).str.strip()
+    df["Year"] = pd.to_numeric(df["Year"], errors="coerce").astype("Int64")
+    df["market_value"] = pd.to_numeric(df["market_value"], errors="coerce")
+    df["Month_Year"] = pd.to_datetime(
+        df["Month"] + " " + df["Year"].astype(str),
+        format="%B %Y",
+        errors="coerce"
+    )
+    df = df.dropna(subset=["Category", "Month_Year", "market_value"]).copy()
+    return df
+
 
 df_raw = load_data(DATA_URL)
-df_raw["Month_Year"] = pd.to_datetime(df_raw["Month"] + " " + df_raw["Year"].astype(str))
+
 
 CATEGORIES = [
     "Fortnite", "Marvel", "Pokemon", "Star Wars", "Magic the Gathering",
     "Baseball", "Basketball", "Football", "Hockey", "Soccer"
 ]
 
+
 # ============================================================
 # HELPERS
 # ============================================================
 def preprocess(df: pd.DataFrame, cat: str) -> pd.DataFrame:
     d = df[df["Category"] == cat].copy()
-    d["Month_Year"] = pd.to_datetime(d["Month"] + " " + d["Year"].astype(str))
-    return d.groupby("Month_Year")["market_value"].mean().reset_index()
+    return (
+        d.groupby("Month_Year", as_index=False)["market_value"]
+        .mean()
+        .sort_values("Month_Year")
+    )
+
+
+def pct_change_between(series: pd.Series, start_date: pd.Timestamp, end_date: pd.Timestamp) -> float:
+    if start_date not in series.index or end_date not in series.index:
+        return np.nan
+
+    v0 = series.loc[start_date]
+    v1 = series.loc[end_date]
+
+    if pd.isna(v0) or pd.isna(v1) or v0 == 0:
+        return np.nan
+
+    return (v1 - v0) / v0 * 100
+
+
+def yoy_3mo(series: pd.Series, latest: pd.Timestamp):
+    now = series.get(latest, np.nan)
+    yr = series.get(latest - pd.DateOffset(years=1), np.nan)
+    m3 = series.get(latest - pd.DateOffset(months=3), np.nan)
+
+    yoy = np.nan if pd.isna(now) or pd.isna(yr) or yr == 0 else (now - yr) / yr * 100
+    r3 = np.nan if pd.isna(now) or pd.isna(m3) or m3 == 0 else (now - m3) / m3 * 100
+    return yoy, r3
+
+
+def fmt_pct(x: float, decimals: int = 1) -> str:
+    return "—" if pd.isna(x) else f"{x:.{decimals}f}%"
+
 
 def forecast(df: pd.DataFrame, horizon=12, seasonal_periods=12, trend="add", seasonal="add", ci_level=0.95):
-    y = df.market_value.astype(float)
-    model = ExponentialSmoothing(y, trend=trend, seasonal=seasonal, seasonal_periods=seasonal_periods).fit()
+    y = df["market_value"].astype(float)
+
+    model = ExponentialSmoothing(
+        y,
+        trend=trend,
+        seasonal=seasonal,
+        seasonal_periods=seasonal_periods
+    ).fit()
+
     fc = model.forecast(horizon)
 
-    z_table = {0.80:1.2816, 0.90:1.6449, 0.95:1.9600, 0.98:2.3263, 0.99:2.5758}
+    z_table = {0.80: 1.2816, 0.90: 1.6449, 0.95: 1.9600, 0.98: 2.3263, 0.99: 2.5758}
     z = z_table.get(round(ci_level, 2), 1.96)
     ci = z * np.std(model.resid)
 
-    future = pd.date_range(df.Month_Year.iloc[-1] + pd.DateOffset(months=1), periods=horizon, freq="MS")
-    fc_df = pd.DataFrame({"Date": future, "Forecast": fc, "Upper": fc + ci, "Lower": fc - ci})
-    hist_df = pd.DataFrame({"Date": df.Month_Year, "Historical": df.market_value.values})
+    future = pd.date_range(df["Month_Year"].iloc[-1] + pd.DateOffset(months=1), periods=horizon, freq="MS")
+    fc_df = pd.DataFrame({
+        "Date": future,
+        "Forecast": fc.values,
+        "Upper": fc.values + ci,
+        "Lower": fc.values - ci
+    })
+    hist_df = pd.DataFrame({
+        "Date": df["Month_Year"].values,
+        "Historical": df["market_value"].values
+    })
     return hist_df, fc_df
 
+
 def macd(df: pd.DataFrame):
-    s = df.market_value.ewm(span=12, adjust=False).mean()
-    l = df.market_value.ewm(span=26, adjust=False).mean()
+    s = df["market_value"].ewm(span=12, adjust=False).mean()
+    l = df["market_value"].ewm(span=26, adjust=False).mean()
     m = s - l
     sig = m.ewm(span=9, adjust=False).mean()
     bucket = pd.cut(
@@ -189,16 +246,8 @@ def macd(df: pd.DataFrame):
     )
     return m, sig, bucket
 
-def yoy_3mo(series: pd.Series, latest: pd.Timestamp):
-    now = series.get(latest, np.nan)
-    yr  = series.get(latest - pd.DateOffset(years=1), np.nan)
-    m3  = series.get(latest - pd.DateOffset(months=3), np.nan)
-    yoy = np.nan if np.isnan(now) or np.isnan(yr) else (now - yr) / yr * 100
-    r3  = np.nan if np.isnan(now) or np.isnan(m3) else (now - m3) / m3 * 100
-    return yoy, r3
 
 def apply_fig_theme(fig: go.Figure, height: int, slide_mode: bool):
-    # Animation: smooth chart transitions
     fig.update_layout(
         transition=dict(duration=450, easing="cubic-in-out"),
         paper_bgcolor=THEME["card"] if not slide_mode else "#FFFFFF",
@@ -211,6 +260,7 @@ def apply_fig_theme(fig: go.Figure, height: int, slide_mode: bool):
     fig.update_xaxes(gridcolor=THEME["grid"], zerolinecolor=THEME["grid"])
     fig.update_yaxes(gridcolor=THEME["grid"], zerolinecolor=THEME["grid"])
     return fig
+
 
 def kpi_card(label: str, value: str, sub: str | None = None):
     sub_html = f"<div class='muted'>{sub}</div>" if sub else ""
@@ -225,6 +275,7 @@ def kpi_card(label: str, value: str, sub: str | None = None):
         unsafe_allow_html=True
     )
 
+
 def section_card(title: str, body_html: str):
     st.markdown(
         f"""
@@ -236,37 +287,38 @@ def section_card(title: str, body_html: str):
         unsafe_allow_html=True
     )
 
+
 def build_market_summary(df: pd.DataFrame, cats: list[str]):
     wide = (
         df[df["Category"].isin(cats)]
         .pivot_table(values="market_value", index="Month_Year", columns="Category", aggfunc="mean")
+        .reindex(columns=cats)
         .sort_index()
+        .apply(pd.to_numeric, errors="coerce")
     )
 
     last_row = wide.index.max()
     y_ago = last_row - pd.DateOffset(years=1)
-    m_3  = last_row - pd.DateOffset(months=3)
-
-    def pct(series, t0, t1):
-        v0, v1 = series.get(t0, np.nan), series.get(t1, np.nan)
-        return np.nan if np.isnan(v0) or np.isnan(v1) else (v1 - v0) / v0 * 100
+    m_3 = last_row - pd.DateOffset(months=3)
 
     rows = []
     for c in cats:
         s = wide[c]
         rows.append({
             "Category": c,
-            "YoY %": pct(s, y_ago, last_row),
-            "3-Mo %": pct(s, m_3, last_row)
+            "YoY %": pct_change_between(s, y_ago, last_row),
+            "3-Mo %": pct_change_between(s, m_3, last_row)
         })
 
     summary = pd.DataFrame(rows).set_index("Category").sort_index()
-    composite = wide[cats].mean(axis=1)
-    comp_yoy = pct(composite, y_ago, last_row)
-    comp_3mo = pct(composite, m_3, last_row)
-    breadth = float(np.mean(summary["3-Mo %"] > 0) * 100)
+
+    # FIX: use average category momentum instead of YoY of the average raw level
+    comp_yoy = summary["YoY %"].mean(skipna=True)
+    comp_3mo = summary["3-Mo %"].mean(skipna=True)
+    breadth = float(summary["3-Mo %"].gt(0).mean() * 100)
 
     return summary, last_row, comp_yoy, comp_3mo, breadth
+
 
 def download_print_ready_html(html: str, filename: str):
     st.download_button(
@@ -276,8 +328,9 @@ def download_print_ready_html(html: str, filename: str):
         mime="text/html"
     )
 
+
 # ============================================================
-# SIDEBAR NAV (kept)
+# SIDEBAR NAV
 # ============================================================
 PAGES = [
     "Pancake Analytics Trading Card Market Report",
@@ -296,7 +349,6 @@ with st.sidebar:
     st.markdown(f"<div class='muted'>{APP_SUBTITLE}</div>", unsafe_allow_html=True)
     st.markdown("---")
 
-    # Slide mode toggle
     slide_mode = st.toggle("📄 Slide Mode", value=False, help="Collector print/PDF-friendly layout")
 
     page = st.selectbox(
@@ -309,17 +361,16 @@ with st.sidebar:
     cat1 = st.selectbox("Primary category", CATEGORIES, index=CATEGORIES.index("Pokemon"))
     cat2 = st.selectbox("Compare against", ["None"] + [c for c in CATEGORIES if c != cat1])
 
-# Optional slide wrapper
 if slide_mode:
     st.markdown("<div class='slide-wrap'>", unsafe_allow_html=True)
 
+
 # ============================================================
-# MARKET REPORT (AUTO LOAD, EXEC FORMAT)
+# MARKET REPORT
 # ============================================================
 if page == "Pancake Analytics Trading Card Market Report":
     summary, last_row, comp_yoy, comp_3mo, breadth = build_market_summary(df_raw, CATEGORIES)
 
-    # Header (no logo)
     st.markdown(
         f"""
         <div class="pa-header fade-in">
@@ -338,15 +389,16 @@ if page == "Pancake Analytics Trading Card Market Report":
         unsafe_allow_html=True
     )
 
-    # KPI row
     c1, c2, c3 = st.columns(3)
-    with c1: kpi_card("Composite YoY", f"{comp_yoy:0.1f}%")
-    with c2: kpi_card("Composite 3-Mo", f"{comp_3mo:0.1f}%")
-    with c3: kpi_card("Breadth (3-Mo > 0)", f"{breadth:0.0f}%")
+    with c1:
+        kpi_card("Composite YoY", fmt_pct(comp_yoy))
+    with c2:
+        kpi_card("Composite 3-Mo", fmt_pct(comp_3mo))
+    with c3:
+        kpi_card("Breadth (3-Mo > 0)", fmt_pct(breadth, 0))
 
     st.markdown("")
 
-    # Leaders / Laggards
     top_3mo = summary.sort_values("3-Mo %", ascending=False).head(3)
     top_yoy = summary.sort_values("YoY %", ascending=False).head(3)
     lag_3mo = summary.sort_values("3-Mo %", ascending=True).head(2)
@@ -357,14 +409,12 @@ if page == "Pancake Analytics Trading Card Market Report":
         f"YoY leaders: {', '.join(top_yoy.index)}. "
         f"Recent laggards: {', '.join(lag_3mo.index)}.</div>"
         f"<div style='margin-top:10px;'><b>What It Means:</b> "
-        f"The last 3 months show where momentum is concentrating. Laggards can be a buyer’s window — "
-        f"especially if you’re building long-term.</div>"
+        f"The last 3 months show where momentum is concentrating. "
+        f"Laggards can be a buyer’s window — especially if you’re building long-term.</div>"
     )
 
-    # ==== ONE ROW: Momentum map | Donut | Top YoY chart (no blank space) ====
     left, mid, right = st.columns([2.05, 1.35, 1.35])
 
-    # Momentum map
     fig_sc = go.Figure()
     fig_sc.add_trace(go.Scatter(
         x=summary["3-Mo %"],
@@ -385,7 +435,6 @@ if page == "Pancake Analytics Trading Card Market Report":
     )
     apply_fig_theme(fig_sc, height=360, slide_mode=slide_mode)
 
-    # Donut: share of 3-Mo momentum (Top-3 only, normalized)
     top3 = top_3mo.copy()
     top3_sum = float(top3["3-Mo %"].sum()) if not top3["3-Mo %"].isna().all() else 0.0
     shares = (top3["3-Mo %"] / top3_sum * 100) if top3_sum != 0 else pd.Series([0, 0, 0], index=top3.index)
@@ -410,10 +459,8 @@ if page == "Pancake Analytics Trading Card Market Report":
         legend=dict(orientation="v", x=1.02, y=0.95)
     )
     apply_fig_theme(fig_dn, height=360, slide_mode=slide_mode)
-    # Prevent title truncation explicitly:
     fig_dn.update_layout(margin=dict(l=16, r=80, t=74, b=18))
 
-    # Top YoY bar (fix "undefined" by ensuring name is empty + legends off)
     top5_yoy = summary.sort_values("YoY %", ascending=False).head(5)
     fig_y = go.Figure()
     fig_y.add_trace(go.Bar(
@@ -432,9 +479,8 @@ if page == "Pancake Analytics Trading Card Market Report":
     )
     fig_y.update_yaxes(autorange="reversed")
     apply_fig_theme(fig_y, height=360, slide_mode=slide_mode)
-    fig_y.update_layout(margin=dict(l=16, r=16, t=74, b=18))  # avoid truncation
+    fig_y.update_layout(margin=dict(l=16, r=16, t=74, b=18))
 
-    # Render row
     with left:
         st.plotly_chart(fig_sc, use_container_width=True, theme="streamlit")
     with mid:
@@ -444,7 +490,6 @@ if page == "Pancake Analytics Trading Card Market Report":
 
     st.markdown("")
 
-    # Leaders + Top Category YoY + exec meaning row (no weird gaps)
     r1, r2 = st.columns([1.15, 0.85])
     with r1:
         section_card("This Month’s Leaders", leaders_text)
@@ -461,12 +506,10 @@ if page == "Pancake Analytics Trading Card Market Report":
 
     st.markdown("")
 
-    # Bottom full table (NO SCROLL): use st.table
     st.markdown("### Full Category Table (YoY + 3-Mo)")
     bottom_tbl = summary[["YoY %", "3-Mo %"]].round(2).loc[sorted(CATEGORIES)]
     st.table(bottom_tbl)
 
-    # Print-ready HTML download (optional convenience)
     st.markdown("---")
     st.markdown("#### Export")
     st.markdown(
@@ -474,7 +517,6 @@ if page == "Pancake Analytics Trading Card Market Report":
         unsafe_allow_html=True
     )
 
-    # Simple print-ready HTML (layout + table only, charts remain in-app)
     html_snapshot = f"""<!doctype html>
 <html>
 <head>
@@ -499,9 +541,9 @@ if page == "Pancake Analytics Trading Card Market Report":
   </div>
 
   <div class="kpis">
-    <div class="card"><div class="muted">Composite YoY</div><div style="font-size:28px;font-weight:800;">{comp_yoy:0.1f}%</div></div>
-    <div class="card"><div class="muted">Composite 3-Mo</div><div style="font-size:28px;font-weight:800;">{comp_3mo:0.1f}%</div></div>
-    <div class="card"><div class="muted">Breadth (3-Mo &gt; 0)</div><div style="font-size:28px;font-weight:800;">{breadth:0.0f}%</div></div>
+    <div class="card"><div class="muted">Composite YoY</div><div style="font-size:28px;font-weight:800;">{fmt_pct(comp_yoy)}</div></div>
+    <div class="card"><div class="muted">Composite 3-Mo</div><div style="font-size:28px;font-weight:800;">{fmt_pct(comp_3mo)}</div></div>
+    <div class="card"><div class="muted">Breadth (3-Mo &gt; 0)</div><div style="font-size:28px;font-weight:800;">{fmt_pct(breadth, 0)}</div></div>
   </div>
 
   <h3 style="margin-top:20px;">Full Category Table (YoY + 3-Mo)</h3>
@@ -513,11 +555,15 @@ if page == "Pancake Analytics Trading Card Market Report":
         filename=f"cardboard_compass_market_report_{last_row:%Y_%m}.html"
     )
 
+
 # ============================================================
 # CATEGORY ANALYSIS
 # ============================================================
 elif page == "Category Analysis":
-    st.markdown(f"<div class='pa-card fade-in'><h3>Category Analysis</h3><div class='muted'>Forecast + MACD + seasonality</div></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='pa-card fade-in'><h3>Category Analysis</h3><div class='muted'>Forecast + MACD + seasonality</div></div>",
+        unsafe_allow_html=True
+    )
     st.markdown("")
 
     def show_category(cat: str):
@@ -525,15 +571,28 @@ elif page == "Category Analysis":
 
         with st.expander("Forecast settings", expanded=False):
             horizon = st.slider("Horizon (months)", 6, 24, 12, step=1, key=f"h_{cat}")
-            ci = st.select_slider("Confidence interval", options=[0.80, 0.90, 0.95, 0.98, 0.99],
-                                  value=0.95, key=f"ci_{cat}")
+            ci = st.select_slider(
+                "Confidence interval",
+                options=[0.80, 0.90, 0.95, 0.98, 0.99],
+                value=0.95,
+                key=f"ci_{cat}"
+            )
             hw_trend = st.selectbox("Trend", ["add", "mul"], index=0, key=f"t_{cat}")
             hw_seasonal = st.selectbox("Seasonal", ["add", "mul"], index=0, key=f"s_{cat}")
             sp = st.number_input("Seasonal periods", min_value=4, max_value=24, value=12, step=1, key=f"sp_{cat}")
 
-        hist_df, fc_df = forecast(d, horizon=horizon, seasonal_periods=sp, trend=hw_trend, seasonal=hw_seasonal, ci_level=ci)
+        hist_df, fc_df = forecast(
+            d,
+            horizon=horizon,
+            seasonal_periods=sp,
+            trend=hw_trend,
+            seasonal=hw_seasonal,
+            ci_level=ci
+        )
 
-        pct_change = (fc_df.Forecast.iloc[-1] - d.market_value.iloc[-1]) / d.market_value.iloc[-1] * 100
+        last_actual = d["market_value"].iloc[-1]
+        last_forecast = fc_df["Forecast"].iloc[-1]
+        pct_change = np.nan if last_actual == 0 else (last_forecast - last_actual) / last_actual * 100
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=hist_df["Date"], y=hist_df["Historical"], mode="lines", name="Historical"))
@@ -552,15 +611,15 @@ elif page == "Category Analysis":
         apply_fig_theme(fig, height=420, slide_mode=slide_mode)
         st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
+        forecast_text = "—" if pd.isna(pct_change) else f"{pct_change:+.1f}%"
         section_card(
             "Forecast Read",
-            f"<div><b>What the Data Says:</b> Next {horizon} months project <b>{pct_change:+.1f}%</b> vs last observed.</div>"
+            f"<div><b>What the Data Says:</b> Next {horizon} months project <b>{forecast_text}</b> vs last observed.</div>"
             f"<div style='margin-top:8px;'><b>What It Means:</b> Use this as directionally helpful — not an exact card price predictor.</div>"
         )
 
-        # MACD
         m, sig, bucket = macd(d)
-        macd_df = pd.DataFrame({"Date": d.Month_Year, "MACD": m.values, "Signal": sig.values})
+        macd_df = pd.DataFrame({"Date": d["Month_Year"], "MACD": m.values, "Signal": sig.values})
 
         fig_m = go.Figure()
         fig_m.add_trace(go.Scatter(x=macd_df["Date"], y=macd_df["MACD"], mode="lines", name="MACD"))
@@ -570,11 +629,13 @@ elif page == "Category Analysis":
         apply_fig_theme(fig_m, height=340, slide_mode=slide_mode)
         st.plotly_chart(fig_m, use_container_width=True, theme="streamlit")
 
-        # Seasonality
         dd = d.copy()
-        dd["Month"] = dd.Month_Year.dt.month_name()
-        month_order = ["January","February","March","April","May","June","July","August","September","October","November","December"]
-        month_avg = dd.groupby("Month").market_value.mean().reindex(month_order)
+        dd["Month"] = dd["Month_Year"].dt.month_name()
+        month_order = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ]
+        month_avg = dd.groupby("Month")["market_value"].mean().reindex(month_order)
 
         fig_s = go.Figure(go.Bar(x=month_avg.index, y=month_avg.values, marker=dict(color=THEME["primary"]), name=""))
         fig_s.update_layout(title=f"{cat} — Seasonality (Avg by Month)", xaxis_title="Month", yaxis_title="Avg Value", showlegend=False)
@@ -585,14 +646,20 @@ elif page == "Category Analysis":
         show_category(cat1)
     else:
         a, b = st.columns(2)
-        with a: show_category(cat1)
-        with b: show_category(cat2)
+        with a:
+            show_category(cat1)
+        with b:
+            show_category(cat2)
+
 
 # ============================================================
 # MARKET HEATMAP
 # ============================================================
 elif page == "Market HeatMap":
-    st.markdown(f"<div class='pa-card fade-in'><h3>Market HeatMap</h3><div class='muted'>MACD bucket snapshot by category</div></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='pa-card fade-in'><h3>Market HeatMap</h3><div class='muted'>MACD bucket snapshot by category</div></div>",
+        unsafe_allow_html=True
+    )
     st.markdown("")
 
     rows = []
@@ -604,17 +671,27 @@ elif page == "Market HeatMap":
     heat = pd.DataFrame(rows).sort_values("Category")
     st.table(heat)
 
+
 # ============================================================
 # STATE OF MARKET
 # ============================================================
 elif page == "State of Market":
-    st.markdown(f"<div class='pa-card fade-in'><h3>State of Market</h3><div class='muted'>YoY vs 3-Mo momentum by category</div></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='pa-card fade-in'><h3>State of Market</h3><div class='muted'>YoY vs 3-Mo momentum by category</div></div>",
+        unsafe_allow_html=True
+    )
     st.markdown("")
 
     latest = df_raw["Month_Year"].max()
     yoy_vals, mo3_vals = [], []
+
     for c in CATEGORIES:
-        s = df_raw[df_raw["Category"] == c].groupby("Month_Year")["market_value"].mean()
+        s = (
+            df_raw[df_raw["Category"] == c]
+            .groupby("Month_Year")["market_value"]
+            .mean()
+            .sort_index()
+        )
         y, r = yoy_3mo(s, latest)
         yoy_vals.append(y)
         mo3_vals.append(r)
@@ -625,17 +702,26 @@ elif page == "State of Market":
     fig.add_trace(go.Bar(x=mkt["Category"], y=mkt["YoY %"], name="YoY %", marker=dict(color=THEME["primary"])))
     fig.add_trace(go.Bar(x=mkt["Category"], y=mkt["3-Mo %"], name="3-Mo %", marker=dict(color=THEME["secondary"])))
     fig.add_hline(y=0, line_dash="dash", opacity=0.6)
-    fig.update_layout(barmode="group", title=f"YoY vs 3-Mo Momentum (through {latest:%b %Y})", xaxis_title="Category", yaxis_title="% change")
+    fig.update_layout(
+        barmode="group",
+        title=f"YoY vs 3-Mo Momentum (through {latest:%b %Y})",
+        xaxis_title="Category",
+        yaxis_title="% change"
+    )
     apply_fig_theme(fig, height=420, slide_mode=slide_mode)
     st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
     st.table(mkt.sort_values("YoY %", ascending=False))
 
+
 # ============================================================
 # CUSTOM INDEX BUILDER
 # ============================================================
 elif page == "Custom Index Builder":
-    st.markdown(f"<div class='pa-card fade-in'><h3>Custom Index Builder</h3><div class='muted'>Blend categories into a custom market index</div></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='pa-card fade-in'><h3>Custom Index Builder</h3><div class='muted'>Blend categories into a custom market index</div></div>",
+        unsafe_allow_html=True
+    )
     st.markdown("")
 
     sel = st.multiselect("Categories", CATEGORIES, default=["Pokemon", "Magic the Gathering"])
@@ -653,11 +739,18 @@ elif page == "Custom Index Builder":
         df_raw.pivot_table(values="market_value", index="Month_Year", columns="Category", aggfunc="mean")
         .reindex(columns=CATEGORIES)
         .sort_index()
+        .apply(pd.to_numeric, errors="coerce")
     )
     custom = (pivot[sel] * weights).sum(axis=1)
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=custom.index, y=custom.values, mode="lines", name="My Index", line=dict(width=3, color=THEME["primary"])))
+    fig.add_trace(go.Scatter(
+        x=custom.index,
+        y=custom.values,
+        mode="lines",
+        name="My Index",
+        line=dict(width=3, color=THEME["primary"])
+    ))
     fig.update_layout(title="Custom Index", xaxis_title="Month", yaxis_title="Value")
     apply_fig_theme(fig, height=420, slide_mode=slide_mode)
     st.plotly_chart(fig, use_container_width=True, theme="streamlit")
@@ -665,11 +758,15 @@ elif page == "Custom Index Builder":
     st.markdown("#### Weights")
     st.table(weights.mul(100).round(1).rename("Weight %"))
 
+
 # ============================================================
 # SEASONALITY HEATMAP
 # ============================================================
 elif page == "Seasonality HeatMap":
-    st.markdown(f"<div class='pa-card fade-in'><h3>Seasonality HeatMap</h3><div class='muted'>Average MoM % change by month</div></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='pa-card fade-in'><h3>Seasonality HeatMap</h3><div class='muted'>Average MoM % change by month</div></div>",
+        unsafe_allow_html=True
+    )
     st.markdown("")
 
     df_tmp = df_raw.copy()
@@ -680,7 +777,7 @@ elif page == "Seasonality HeatMap":
         .reindex(index=CATEGORIES)
     )
     pct = (wide.pct_change(axis=1) * 100).round(2)
-    month_labels = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
     fig = go.Figure(data=go.Heatmap(
         z=pct.values,
@@ -695,11 +792,15 @@ elif page == "Seasonality HeatMap":
 
     st.table(pct.fillna("—"))
 
+
 # ============================================================
 # ROLLING VOLATILITY
 # ============================================================
 elif page == "Rolling Volatility":
-    st.markdown(f"<div class='pa-card fade-in'><h3>Rolling Volatility</h3><div class='muted'>Coefficient of variation over time</div></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='pa-card fade-in'><h3>Rolling Volatility</h3><div class='muted'>Coefficient of variation over time</div></div>",
+        unsafe_allow_html=True
+    )
     st.markdown("")
 
     pick = st.selectbox("Category", CATEGORIES, index=CATEGORIES.index(cat1))
@@ -708,24 +809,28 @@ elif page == "Rolling Volatility":
     w1 = st.slider("Short window (months)", 3, 18, 6, step=1)
     w2 = st.slider("Long window (months)", 6, 36, 12, step=1)
 
-    cv1 = (d.market_value.rolling(w1).std() / d.market_value.rolling(w1).mean() * 100).rename(f"{w1}-Mo")
-    cv2 = (d.market_value.rolling(w2).std() / d.market_value.rolling(w2).mean() * 100).rename(f"{w2}-Mo")
+    cv1 = (d["market_value"].rolling(w1).std() / d["market_value"].rolling(w1).mean() * 100).rename(f"{w1}-Mo")
+    cv2 = (d["market_value"].rolling(w2).std() / d["market_value"].rolling(w2).mean() * 100).rename(f"{w2}-Mo")
     cv_df = pd.concat([cv1, cv2], axis=1)
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=cv_df.index, y=cv_df.iloc[:,0], mode="lines", name=cv_df.columns[0], line=dict(color=THEME["primary"])))
-    fig.add_trace(go.Scatter(x=cv_df.index, y=cv_df.iloc[:,1], mode="lines", name=cv_df.columns[1], line=dict(color=THEME["secondary"])))
+    fig.add_trace(go.Scatter(x=cv_df.index, y=cv_df.iloc[:, 0], mode="lines", name=cv_df.columns[0], line=dict(color=THEME["primary"])))
+    fig.add_trace(go.Scatter(x=cv_df.index, y=cv_df.iloc[:, 1], mode="lines", name=cv_df.columns[1], line=dict(color=THEME["secondary"])))
     fig.update_layout(title=f"{pick} — Rolling Volatility", xaxis_title="Month", yaxis_title="CoV (%)")
     apply_fig_theme(fig, height=420, slide_mode=slide_mode)
     st.plotly_chart(fig, use_container_width=True, theme="streamlit")
 
     st.table(cv_df.round(2).tail(24))
 
+
 # ============================================================
 # CORRELATION MATRIX
 # ============================================================
 elif page == "Correlation Matrix":
-    st.markdown(f"<div class='pa-card fade-in'><h3>Correlation Matrix</h3><div class='muted'>Category co-movement (returns or levels)</div></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='pa-card fade-in'><h3>Correlation Matrix</h3><div class='muted'>Category co-movement (returns or levels)</div></div>",
+        unsafe_allow_html=True
+    )
     st.markdown("")
 
     wide = (
@@ -750,11 +855,15 @@ elif page == "Correlation Matrix":
 
     st.table(corr.round(2))
 
+
 # ============================================================
-# FLIP FORECAST (Monte Carlo)
+# FLIP FORECAST
 # ============================================================
 elif page == "Flip Forecast":
-    st.markdown(f"<div class='pa-card fade-in'><h3>Flip Forecast</h3><div class='muted'>Monte Carlo projection based on category history</div></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"<div class='pa-card fade-in'><h3>Flip Forecast</h3><div class='muted'>Monte Carlo projection based on category history</div></div>",
+        unsafe_allow_html=True
+    )
     st.markdown("")
 
     sim_category = st.selectbox("Choose Category for Forecast", CATEGORIES, index=CATEGORIES.index(cat1))
@@ -778,7 +887,7 @@ elif page == "Flip Forecast":
     for i in range(num_simulations):
         for m in range(num_months):
             rand_return = rng.normal(expected_return, monthly_volatility)
-            results[i, m+1] = results[i, m] * (1 + rand_return)
+            results[i, m + 1] = results[i, m] * (1 + rand_return)
 
     months_ahead = np.arange(num_months + 1)
     p10 = np.percentile(results, 10, axis=0)
@@ -786,7 +895,10 @@ elif page == "Flip Forecast":
     p90 = np.percentile(results, 90, axis=0)
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=months_ahead, y=p50, mode="lines", name="Median", line=dict(color=THEME["primary"], dash="dash", width=3)))
+    fig.add_trace(go.Scatter(
+        x=months_ahead, y=p50, mode="lines", name="Median",
+        line=dict(color=THEME["primary"], dash="dash", width=3)
+    ))
     fig.add_trace(go.Scatter(
         x=np.concatenate([months_ahead, months_ahead[::-1]]),
         y=np.concatenate([p90, p10[::-1]]),
@@ -807,6 +919,7 @@ elif page == "Flip Forecast":
         "Metric": ["Expected Return", "Monthly Volatility (capped)", "Probability Asking Price Hit"],
         "Value": [f"{expected_return:.2%}", f"{monthly_volatility:.2%}", f"{prob_hit:.1f}%"]
     }))
+
 
 # ============================================================
 # FOOTER
