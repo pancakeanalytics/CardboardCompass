@@ -1053,7 +1053,6 @@ PAGES = [
     "Flip Forecast",
     "Raw vs Grade Decision Engine",
     "Liquidity + Exit Risk Monitor",
-    "Hot Topics of the Week",
     "Portfolio Allocator",
 ]
 
