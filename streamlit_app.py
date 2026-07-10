@@ -572,9 +572,134 @@ def render_liquidity_exit_monitor():
     st.download_button('Download liquidity monitor CSV', data=csv, file_name='liquidity_exit_monitor.csv', mime='text/csv', key='liq_csv_download')
 
 
+def render_episode_companion_dashboard():
+    st.markdown(f"<div class='pa-card fade-in'><h3>Episode Companion Dashboard</h3><div class='muted'>Turn each podcast episode into a live data page with thesis, charts, watchlist, and action points</div></div>", unsafe_allow_html=True)
+    st.markdown("")
+
+    c1, c2, c3 = st.columns([1.1, 1.2, 0.9])
+    with c1:
+        episode_title = st.text_input('Episode title', value='Why Pokemon Liquidity Still Matters in 2026', key='ep_title')
+    with c2:
+        episode_hook = st.text_input('Core thesis / hook', value='Collectors are paying for liquidity and confidence, not just scarcity.', key='ep_hook')
+    with c3:
+        episode_date = st.date_input('Episode date', value=pd.Timestamp.today(), key='ep_date')
+
+    d1, d2, d3 = st.columns(3)
+    with d1:
+        focus_categories = st.multiselect('Focus categories', CATEGORIES, default=['Pokemon', 'Basketball'], key='ep_cats')
+    with d2:
+        stance = st.selectbox('Episode stance', ['Bullish', 'Neutral', 'Bearish', 'Mixed'], index=3, key='ep_stance')
+    with d3:
+        call_to_action = st.text_input('Listener CTA', value='Audit your top five cards for liquidity, not just headline comp value.', key='ep_cta')
+
+    if not focus_categories:
+        st.warning('Pick at least one focus category for the episode dashboard.')
+        return
+
+    summary, last_row, comp_yoy, comp_3mo, breadth = build_market_summary(df_raw, focus_categories)
+    signal_df = compute_category_signal_table(df_raw)
+    episode_signals = signal_df[signal_df['Category'].isin(focus_categories)].copy()
+
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        kpi_card('Episode stance', stance)
+    with k2:
+        kpi_card('Focus breadth', f"{len(focus_categories)} cats")
+    with k3:
+        kpi_card('Avg YoY', fmt_pct(summary['YoY %'].mean(skipna=True)))
+    with k4:
+        kpi_card('Avg 3-Mo', fmt_pct(summary['3-Mo %'].mean(skipna=True)))
+
+    st.markdown('#### Episode Thesis Card')
+    thesis_html = f"""
+    <div class='pa-card fade-in'>
+      <div class='muted'>Episode thesis</div>
+      <div style='font-size:30px; font-weight:900; margin-top:6px; line-height:1.15;'>{episode_title}</div>
+      <div style='margin-top:10px; font-size:16px; line-height:1.5;'>{episode_hook}</div>
+      <div class='muted' style='margin-top:12px;'>Recorded for {pd.to_datetime(episode_date):%B %d, %Y} • Data through {last_row:%b %Y}</div>
+    </div>
+    """
+    st.markdown(thesis_html, unsafe_allow_html=True)
+
+    l1, l2 = st.columns([1.2, 1])
+    with l1:
+        fig = go.Figure()
+        for cat in focus_categories:
+            d = preprocess(df_raw, cat)
+            fig.add_trace(go.Scatter(x=d['Month_Year'], y=d['market_value'], mode='lines', name=cat))
+        fig.update_layout(title='Focus Category Trendlines', xaxis_title='Month', yaxis_title='Market Value')
+        apply_fig_theme(fig, height=380, slide_mode=False)
+        st.plotly_chart(fig, use_container_width=True, theme='streamlit')
+    with l2:
+        bar_df = summary.reset_index().sort_values('3-Mo %', ascending=False)
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(x=bar_df['Category'], y=bar_df['3-Mo %'], marker=dict(color=THEME['primary']), showlegend=False))
+        fig2.add_hline(y=0, line_dash='dash', opacity=0.6)
+        fig2.update_layout(title='3-Month Momentum Snapshot', xaxis_title='Category', yaxis_title='3-Mo %')
+        apply_fig_theme(fig2, height=380, slide_mode=False)
+        st.plotly_chart(fig2, use_container_width=True, theme='streamlit')
+
+    st.markdown('#### Episode Signal Table')
+    signal_view = episode_signals[['Category', 'YoY %', '3-Mo %', '6-Mo CoV %', 'Avg Corr', 'Momentum Score']].copy().sort_values('Momentum Score', ascending=False)
+    st.dataframe(signal_view.round(2), use_container_width=True, hide_index=True)
+
+    st.markdown('#### Listener Watchlist')
+    watchlist_default = pd.DataFrame([
+        {'Item': 'High-liquidity blue chip', 'Why it matters': 'Easy to exit if episode thesis is wrong', 'Priority': 'High'},
+        {'Item': 'Momentum leader', 'Why it matters': 'Confirms whether trend is broadening or fading', 'Priority': 'High'},
+        {'Item': 'Lagging category', 'Why it matters': 'Potential rotation candidate if thesis is right', 'Priority': 'Medium'},
+        {'Item': 'Sealed or alternative sleeve', 'Why it matters': 'Useful for comparing collector vs investor demand', 'Priority': 'Low'},
+    ])
+    watchlist = st.data_editor(
+        watchlist_default,
+        use_container_width=True,
+        hide_index=True,
+        num_rows='dynamic',
+        column_config={
+            'Item': st.column_config.TextColumn('Item'),
+            'Why it matters': st.column_config.TextColumn('Why it matters'),
+            'Priority': st.column_config.SelectboxColumn('Priority', options=['High', 'Medium', 'Low'])
+        },
+        key='ep_watchlist'
+    )
+
+    e1, e2 = st.columns([1.1, 1])
+    with e1:
+        st.markdown('#### Episode Run of Show')
+        run_of_show = pd.DataFrame([
+            {'Segment': 'Opening thesis', 'Talking point': episode_hook},
+            {'Segment': 'What the data says', 'Talking point': f"Average YoY is {fmt_pct(summary['YoY %'].mean(skipna=True))} across selected categories."},
+            {'Segment': 'What I am watching', 'Talking point': call_to_action},
+            {'Segment': 'Risk check', 'Talking point': 'Watch liquidity, volatility, and whether the current leader can sustain bid depth.'},
+        ])
+        st.dataframe(run_of_show, use_container_width=True, hide_index=True)
+    with e2:
+        stance_colors = {'Bullish': THEME['primary'], 'Neutral': THEME['secondary'], 'Bearish': THEME['accent_red'], 'Mixed': '#F59E0B'}
+        pie_values = [max(1, float(summary['3-Mo %'].gt(0).sum())), max(1, float(summary['3-Mo %'].le(0).sum()))]
+        fig3 = go.Figure(go.Pie(labels=['Positive momentum', 'Flat / negative momentum'], values=pie_values, hole=0.62, marker=dict(colors=[stance_colors.get(stance, THEME['primary']), THEME['border']])))
+        fig3.update_layout(title='Breadth Check')
+        apply_fig_theme(fig3, height=360, slide_mode=False)
+        st.plotly_chart(fig3, use_container_width=True, theme='streamlit')
+
+    st.markdown('#### Publishing Notes')
+    notes = [
+        f"Episode title: {episode_title}",
+        f"Core thesis: {episode_hook}",
+        f"Current stance: {stance}",
+        f"Listener action: {call_to_action}",
+        f"Top momentum category in this episode set: {signal_view.iloc[0]['Category'] if not signal_view.empty else 'N/A'}",
+    ]
+    for note in notes:
+        st.write(f'- {note}')
+
+    export_df = signal_view.copy()
+    export_df['Episode Title'] = episode_title
+    csv = export_df.to_csv(index=False).encode('utf-8')
+    st.download_button('Download episode dashboard CSV', data=csv, file_name='episode_companion_dashboard.csv', mime='text/csv', key='ep_csv_download')
+
 
 def render_topic_generator_dashboard():
-    st.markdown(f"<div class='pa-card fade-in'><h3>Weekly Topic Generator + Collector Briefing</h3><div class='muted'>Use recent sports card and TCG headlines plus Cardboard Compass data to surface one timely theme, then turn it into a collector-friendly briefing with charts, signals, and takeaways.</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='pa-card fade-in'><h3>Weekly Topic Generator + Episode Dashboard</h3><div class='muted'>Pressure test a headlines-only workflow by scraping recent sports card and TCG articles, weighting repeated themes, and using Cardboard Compass data to build an episode dashboard</div></div>", unsafe_allow_html=True)
     st.markdown('')
 
     c1, c2, c3 = st.columns(3)
@@ -585,7 +710,7 @@ def render_topic_generator_dashboard():
     with c3:
         min_keyword_hits = st.selectbox('Min repeated keyword hits', [1, 2, 3], index=1, key='wt_min_hits')
 
-    st.markdown('#### Headlines driving this week')
+    st.markdown('#### 1. Scrape recent article headlines')
 
     import requests, re
     from bs4 import BeautifulSoup
@@ -660,7 +785,7 @@ def render_topic_generator_dashboard():
 
     st.dataframe(articles, use_container_width=True, hide_index=True)
 
-    st.markdown('#### What the headlines are really saying')
+    st.markdown('#### 2. Weight repeated themes from headlines')
 
     def tokenize(text):
         toks = re.findall(r"[A-Za-z0-9\-']+", str(text).lower())
@@ -734,7 +859,7 @@ def render_topic_generator_dashboard():
     focus_categories = st.multiselect('Focus categories', CATEGORIES, default=[c for c in default_focus if c in CATEGORIES], key='wt_ep_cats')
 
     if not focus_categories:
-        st.warning('Pick at least one focus category to render the collector briefing.')
+        st.warning('Pick at least one focus category to render the episode dashboard.')
         return
 
     summary, last_row, comp_yoy, comp_3mo, breadth = build_market_summary(df_raw, focus_categories)
