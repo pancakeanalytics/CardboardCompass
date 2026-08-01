@@ -84,7 +84,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/07/data_file_019.xlsx"
+DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/08/data_file_020.xlsx"
 
 @st.cache_data(show_spinner=False)
 def load_data(url: str) -> pd.DataFrame:
