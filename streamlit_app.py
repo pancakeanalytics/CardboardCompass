@@ -1416,14 +1416,20 @@ Most momentum indicators say "it's declining, sell" and "it's rising, buy" — t
 
     st.markdown("")
     st.markdown("#### Signal Table")
+    BUY_SIGNALS = {"BUY", "BUY THE DIP", "LONG-TERM HOLD"}
+    SELL_SIGNALS = {"SELL THE PEAK"}
+    DASH = "<span style='color:#B5B5B8;'>—</span>"
+
     display_df = heat_df.copy()
     display_df["Raw MACD"] = display_df["Raw Bucket"].apply(bucket_badge)
     display_df["Deseasonalized MACD"] = display_df["Deseasonalized Bucket"].apply(bucket_badge)
-    display_df["Signal"] = display_df["Signal"].apply(signal_badge)
+    display_df["Buy Signal"] = display_df["Signal"].apply(lambda s: signal_badge(s) if s in BUY_SIGNALS else DASH)
+    display_df["Sell Signal"] = display_df["Signal"].apply(lambda s: signal_badge(s) if s in SELL_SIGNALS else DASH)
     display_df[hw_col] = display_df[hw_col].apply(lambda v: "—" if pd.isna(v) else f"{v:+.1f}%")
     display_df["Overextension %"] = display_df["Overextension %"].apply(lambda v: "—" if pd.isna(v) else f"{v:+.0f}%")
-    display_df = display_df[["Category", "Raw MACD", "Deseasonalized MACD", hw_col, "Overextension %", "Signal", "Why"]]
+    display_df = display_df[["Category", "Raw MACD", "Deseasonalized MACD", hw_col, "Overextension %", "Buy Signal", "Sell Signal", "Why"]]
     st.markdown(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
+    st.markdown("<div class='muted'>Buy Signal covers BUY, BUY THE DIP, and LONG-TERM HOLD. Sell Signal covers SELL THE PEAK. A dash in both columns means CAUTION or WATCH — check the Why column for that read.</div>", unsafe_allow_html=True)
 
     st.markdown("")
     st.markdown("<div class='muted'>*Built to buy low and sell high, not to follow the trend — a confirmed decline only becomes SELL THE PEAK if price is still elevated near its own recent highs; otherwise it's WATCH. Blends raw MACD (momentum), a deseasonalized MACD (confirms it's not just calendar timing), an overextension check (price vs. its own trailing average — what actually identifies a peak or a trough), and a Holt-Winters forecast (long-term direction, used for LONG-TERM HOLD). Educational analytics, not financial advice.</div>", unsafe_allow_html=True)
