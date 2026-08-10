@@ -279,6 +279,44 @@ def signal_badge(label: str) -> str:
     return (f"<span style='display:inline-block; padding:4px 12px; border-radius:999px; "
             f"font-weight:800; font-size:12px; letter-spacing:0.3px; {style}'>{label}</span>")
 
+def neutral_badge(text: str) -> str:
+    # Visually quieter than signal_badge — used when a column needs to say
+    # "nothing here" without leaving the cell blank or looking like an alert.
+    return (f"<span style='display:inline-block; padding:4px 12px; border-radius:999px; "
+            f"font-weight:600; font-size:12px; letter-spacing:0.3px; "
+            f"background:#F2F2F3 !important; color:{THEME['muted']} !important; border:1px solid {THEME['border']};'>{text}</span>")
+
+def surprise_note(raw_bucket: str, signal: str, overext_pct: float, adj_threshold: float) -> str:
+    """
+    Momentum (rate of change) and price position (level vs. its own history) are two
+    different things, and that's exactly where these signals tend to confuse people:
+    a "High Up" momentum reading looks like it should mean "too hot to buy," and a
+    "Low Down" or mild reading looks like it shouldn't be worth selling — but the
+    buy/sell call here is actually driven by price position, not momentum. This spells
+    out that gap in plain terms for the specific cases where it applies.
+    """
+    if pd.isna(overext_pct):
+        return "Not enough price history yet to compare against its own average."
+
+    high_momentum = {"High Up", "Med Up"}
+    clearly_falling_hard = {"High Down"}
+
+    if signal in ("BUY", "BUY THE DIP") and raw_bucket in high_momentum:
+        return (f"Momentum reads {raw_bucket} — easy to assume that means \"already too hot to buy\" — but at "
+                f"{overext_pct:+.0f}% vs. its own trailing average, price is still inside this category's normal "
+                f"range (up to ~{adj_threshold:.0f}%, given its usual volatility). Strong momentum isn't the same "
+                f"as a stretched price, and this one hasn't crossed into stretched yet.")
+    if signal == "SELL THE PEAK" and raw_bucket not in clearly_falling_hard:
+        return (f"Momentum ({raw_bucket}) doesn't look alarming by itself — but price is {overext_pct:+.0f}% above "
+                f"its own trailing average, beyond what's normal for this category (~{adj_threshold:.0f}%). This "
+                f"sell call is about price being historically stretched, not about a crash happening right now.")
+    if signal == "BUY THE DIP" and raw_bucket not in high_momentum:
+        return (f"Momentum ({raw_bucket}) looks unremarkable on its own — but price has already fallen "
+                f"{abs(overext_pct):.0f}% below its own trailing average, more than this category's normal swing "
+                f"(~{adj_threshold:.0f}%). That gap vs. its own history, not the recent month-to-month change, is "
+                f"what makes this a dip worth watching.")
+    return "Momentum and price position agree here — nothing to reconcile."
+
 @st.cache_data(show_spinner=False, ttl=3600)
 def compute_category_metrics(cat: str, hw_horizon: int, deseason_method: str, overextension_window: int = 6) -> dict:
     """
@@ -326,6 +364,18 @@ def compute_category_metrics(cat: str, hw_horizon: int, deseason_method: str, ov
         if trailing_avg:
             overextension_pct = float((current_price - trailing_avg) / trailing_avg * 100)
 
+    # Category volatility (12-mo price-level coefficient of variation), used to scale
+    # the overextension threshold per category rather than applying one flat % cutoff
+    # to everything. A 17% deviation is unremarkable noise for a category that normally
+    # swings 50%+ (e.g. Lorcana), but would be a genuinely large move for a sleepy,
+    # low-volatility category — a flat threshold treats both the same, which is the
+    # same class of bias fixed earlier for MACD bucketing.
+    vol_window = 12
+    recent_prices = d["market_value"].tail(vol_window)
+    category_cov = np.nan
+    if len(recent_prices) >= 6 and recent_prices.mean():
+        category_cov = float(recent_prices.std() / recent_prices.mean() * 100)
+
     return {
         "Category": cat,
         "Raw Bucket": raw_bucket,
@@ -335,6 +385,7 @@ def compute_category_metrics(cat: str, hw_horizon: int, deseason_method: str, ov
         "Confirmed": confirmed,
         "HW Pct": hw_pct,
         "Overextension %": overextension_pct,
+        "Category CoV %": category_cov,
     }
 
 def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12, hw_threshold: float = 8.0, deseason_method: str = "ratio", overextension_window: int = 6, overextension_threshold: float = 25.0) -> dict:
@@ -367,11 +418,26 @@ def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12
     confirmed = metrics["Confirmed"]
     hw_pct = metrics["HW Pct"]
     overext_pct = metrics["Overextension %"]
+    category_cov = metrics["Category CoV %"]
+
+    # Scale the overextension threshold by this category's own volatility rather than
+    # applying one flat % cutoff to every category. A high-CoV category (e.g. a young,
+    # thinly-traded TCG) routinely swings 40-50%+ as normal noise, so a flat 25%
+    # threshold would flag it constantly; a sleepy low-CoV category rarely moves that
+    # much, so the same flat threshold would almost never fire. REFERENCE_COV is a
+    # rough "typical" collectibles-category volatility; the clip keeps any single
+    # category's adjustment from swinging the threshold to an extreme.
+    REFERENCE_COV = 15.0
+    if not pd.isna(category_cov) and category_cov > 0:
+        vol_scale = float(np.clip(category_cov / REFERENCE_COV, 0.6, 2.5))
+    else:
+        vol_scale = 1.0
+    adj_overextension_threshold = overextension_threshold * vol_scale
 
     long_term_up = (not pd.isna(hw_pct)) and hw_pct >= hw_threshold
     long_term_down = (not pd.isna(hw_pct)) and hw_pct <= -hw_threshold
-    overextended = (not pd.isna(overext_pct)) and overext_pct >= overextension_threshold
-    oversold = (not pd.isna(overext_pct)) and overext_pct <= -overextension_threshold
+    overextended = (not pd.isna(overext_pct)) and overext_pct >= adj_overextension_threshold
+    oversold = (not pd.isna(overext_pct)) and overext_pct <= -adj_overextension_threshold
 
     # Overextension itself IS the sell-the-peak signal — it does NOT wait for momentum
     # to visibly confirm-turn-down first. Waiting for that confirmation means selling
@@ -380,23 +446,28 @@ def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12
     if overextended:
         signal = "SELL THE PEAK"
         if raw_score <= -1 and confirmed:
-            why = (f"Price is still {overext_pct:.0f}% above its trailing {overextension_window}-mo average, and confirmed "
-                   f"momentum has already turned down — the top is visibly rolling over. Sell before it falls further.")
+            why = (f"Price is still {overext_pct:.0f}% above its trailing {overextension_window}-mo average — "
+                   f"stretched even accounting for this category's own typical volatility (adjusted threshold: "
+                   f"{adj_overextension_threshold:.0f}%) — and confirmed momentum has already turned down. Sell before it falls further.")
         else:
             why = (f"Price is {overext_pct:.0f}% above its trailing {overextension_window}-mo average — deep into peak "
-                   f"territory. Momentum hasn't visibly turned down yet, but waiting for that confirmation means selling "
-                   f"after the drop has already started. This flags it now, while there's still strength to sell into.")
+                   f"territory even accounting for this category's own typical volatility (adjusted threshold: "
+                   f"{adj_overextension_threshold:.0f}%). Momentum hasn't visibly turned down yet, but waiting for that "
+                   f"confirmation means selling after the drop has already started. This flags it now, while there's still strength to sell into.")
     elif oversold and raw_score >= -1:
         signal = "BUY THE DIP"
-        why = (f"Price is {overext_pct:.0f}% below its trailing {overextension_window}-mo average, and downside "
-               f"momentum has stopped accelerating — the profile of a bottom forming, not a falling knife. "
+        why = (f"Price is {overext_pct:.0f}% below its trailing {overextension_window}-mo average — cheap even accounting "
+               f"for this category's own typical volatility (adjusted threshold: {adj_overextension_threshold:.0f}%) — and "
+               f"downside momentum has stopped accelerating, the profile of a bottom forming, not a falling knife. "
                f"(The long-term forecast can still lag a turn like this, so it isn't required to confirm here.)")
     elif raw_score <= -1 and long_term_up:
         signal = "LONG-TERM HOLD"
         why = f"Short-term is soft and not yet at a clean technical low, but the {hw_horizon}-mo Holt-Winters forecast projects a meaningful recovery."
     elif raw_score >= 2 and confirmed and not long_term_down:
         signal = "BUY"
-        why = "Momentum holds up after removing seasonality, the long-term forecast isn't fighting it, and price isn't stretched relative to its own recent average — a healthy climb, not a spike."
+        why = (f"Momentum holds up after removing seasonality, the long-term forecast isn't fighting it, and price is only "
+               f"{overext_pct:+.0f}% vs. its trailing average — inside this category's own normal range (up to "
+               f"{adj_overextension_threshold:.0f}% given its typical volatility), not a spike.")
     elif raw_score >= 1 and long_term_down:
         signal = "CAUTION"
         why = f"Short-term momentum is up, but the {hw_horizon}-mo forecast is turning down — don't chase this."
@@ -416,6 +487,8 @@ def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12
         "Confirmed": confirmed,
         f"{hw_horizon}-Mo HW %": hw_pct,
         "Overextension %": overext_pct,
+        "Category CoV %": category_cov,
+        "Adj. Overextension Threshold %": adj_overextension_threshold,
         "Signal": signal,
         "Why": why,
     }
@@ -1418,18 +1491,25 @@ Most momentum indicators say "it's declining, sell" and "it's rising, buy" — t
     st.markdown("#### Signal Table")
     BUY_SIGNALS = {"BUY", "BUY THE DIP", "LONG-TERM HOLD"}
     SELL_SIGNALS = {"SELL THE PEAK"}
-    DASH = "<span style='color:#B5B5B8;'>—</span>"
 
     display_df = heat_df.copy()
     display_df["Raw MACD"] = display_df["Raw Bucket"].apply(bucket_badge)
     display_df["Deseasonalized MACD"] = display_df["Deseasonalized Bucket"].apply(bucket_badge)
-    display_df["Buy Signal"] = display_df["Signal"].apply(lambda s: signal_badge(s) if s in BUY_SIGNALS else DASH)
-    display_df["Sell Signal"] = display_df["Signal"].apply(lambda s: signal_badge(s) if s in SELL_SIGNALS else DASH)
+    display_df["Buy Signal"] = display_df["Signal"].apply(lambda s: signal_badge(s) if s in BUY_SIGNALS else neutral_badge("NO BUY SIGNAL"))
+    display_df["Sell Signal"] = display_df["Signal"].apply(lambda s: signal_badge(s) if s in SELL_SIGNALS else neutral_badge("NO SELL SIGNAL"))
+    display_df["Why This Might Look Off"] = display_df.apply(
+        lambda r: surprise_note(r["Raw Bucket"], r["Signal"], r["Overextension %"], r["Adj. Overextension Threshold %"]),
+        axis=1,
+    )
     display_df[hw_col] = display_df[hw_col].apply(lambda v: "—" if pd.isna(v) else f"{v:+.1f}%")
-    display_df["Overextension %"] = display_df["Overextension %"].apply(lambda v: "—" if pd.isna(v) else f"{v:+.0f}%")
-    display_df = display_df[["Category", "Raw MACD", "Deseasonalized MACD", hw_col, "Overextension %", "Buy Signal", "Sell Signal", "Why"]]
+    display_df["Overextension % (vs. its threshold)"] = display_df.apply(
+        lambda r: "—" if pd.isna(r["Overextension %"]) else f"{r['Overextension %']:+.0f}% (of ±{r['Adj. Overextension Threshold %']:.0f}%)",
+        axis=1,
+    )
+    display_df = display_df[["Category", "Raw MACD", "Deseasonalized MACD", hw_col, "Overextension % (vs. its threshold)", "Buy Signal", "Sell Signal", "Why This Might Look Off", "Why"]]
     st.markdown(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
-    st.markdown("<div class='muted'>Buy Signal covers BUY, BUY THE DIP, and LONG-TERM HOLD. Sell Signal covers SELL THE PEAK. A dash in both columns means CAUTION or WATCH — check the Why column for that read.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='muted'>The overextension threshold is scaled per category by its own recent volatility — a highly volatile category needs a bigger move before it counts as \"stretched\" than a calmer one does.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='muted'>Buy Signal covers BUY, BUY THE DIP, and LONG-TERM HOLD. Sell Signal covers SELL THE PEAK. \"NO BUY/SELL SIGNAL\" in both means CAUTION or WATCH — check the Why column for that read. \"Why This Might Look Off\" specifically addresses the confusing cases — a BUY when momentum looks too hot to touch, or a SELL THE PEAK when momentum looks too mild to worry about.</div>", unsafe_allow_html=True)
 
     st.markdown("")
     st.markdown("<div class='muted'>*Built to buy low and sell high, not to follow the trend — a confirmed decline only becomes SELL THE PEAK if price is still elevated near its own recent highs; otherwise it's WATCH. Blends raw MACD (momentum), a deseasonalized MACD (confirms it's not just calendar timing), an overextension check (price vs. its own trailing average — what actually identifies a peak or a trough), and a Holt-Winters forecast (long-term direction, used for LONG-TERM HOLD). Educational analytics, not financial advice.</div>", unsafe_allow_html=True)
