@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import os
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import plotly.graph_objects as go
 from datetime import datetime
@@ -108,7 +109,7 @@ st.markdown(
 
 DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/08/data_file_020.xlsx"
 
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=False, ttl=3600)  # refresh hourly — previously cached forever until app reboot
 def load_data(url: str) -> pd.DataFrame:
     df = pd.read_excel(url).copy()
     df.columns = [str(c).strip() for c in df.columns]
@@ -123,7 +124,7 @@ def load_data(url: str) -> pd.DataFrame:
 df_raw = load_data(DATA_URL)
 
 CATEGORIES = [
-    "Fortnite", "Marvel", "Pokemon", "Star Wars", "Magic the Gathering",
+    "Fortnite", "Marvel", "Pokemon", "Star Wars", "Magic the Gathering", "Lorcana",
     "Baseball", "Basketball", "Football", "Hockey", "Soccer"
 ]
 
@@ -150,7 +151,7 @@ BUCKET_CATEGORY_MAP = {
     "GOATs / blue-chip stars": ["Baseball", "Basketball", "Football", "Soccer", "Pokemon"],
     "Established modern stars": ["Basketball", "Football", "Soccer", "Pokemon", "Magic the Gathering"],
     "Prospects / breakout bets": ["Baseball", "Basketball", "Football", "Soccer"],
-    "Sealed wax": ["Pokemon", "Magic the Gathering", "Marvel", "Star Wars", "Fortnite"],
+    "Sealed wax": ["Pokemon", "Magic the Gathering", "Lorcana", "Marvel", "Star Wars", "Fortnite"],
     "Cash / opportunistic reserve": []
 }
 
@@ -158,27 +159,39 @@ def preprocess(df: pd.DataFrame, cat: str) -> pd.DataFrame:
     d = df[df["Category"] == cat].copy()
     return d.groupby("Month_Year", as_index=False)["market_value"].mean().sort_values("Month_Year")
 
-def deseasonalize(df: pd.DataFrame, method: str = "ratio") -> pd.DataFrame:
+def deseasonalize(df: pd.DataFrame, method: str = "ratio", window_months: int = 36) -> pd.DataFrame:
     """
     Adds a 'deseasonalized' column to a copy of df (expects Month_Year + market_value).
     method='ratio'  -> multiplicative seasonal-naive adjustment (value / seasonal index)
     method='diff'   -> additive seasonal-naive adjustment (value - seasonal component)
-    Seasonal index/component is computed from the calendar-month average across
-    all history present in df.
+
+    The seasonal baseline is computed from a trailing window (default 36 months),
+    not the full history — averaging in years with a structurally different price/
+    volatility regime (e.g. a category's early history vs. its current state) can
+    over- or under-correct for what "normal seasonal timing" looks like today.
+    Falls back to full-history average for any calendar month not represented in
+    the trailing window.
     """
     d = df.copy().sort_values("Month_Year")
     d["Month_Num"] = d["Month_Year"].dt.month
-    overall_mean = d["market_value"].mean()
-    month_avg = d.groupby("Month_Num")["market_value"].transform("mean")
+
+    recent = d.tail(window_months) if (window_months and len(d) > window_months) else d
+    recent_overall_mean = recent["market_value"].mean()
+    recent_month_avg = recent.groupby("Month_Num")["market_value"].mean()
+
+    d["month_avg"] = d["Month_Num"].map(recent_month_avg)
+    if d["month_avg"].isna().any():
+        full_month_avg = d.groupby("Month_Num")["market_value"].transform("mean")
+        d["month_avg"] = d["month_avg"].fillna(full_month_avg)
+
     if method == "ratio":
-        seasonal_index = month_avg / overall_mean
-        seasonal_index = seasonal_index.replace(0, np.nan)
+        seasonal_index = (d["month_avg"] / recent_overall_mean).replace(0, np.nan)
         d["deseasonalized"] = d["market_value"] / seasonal_index
     else:  # additive
-        seasonal_component = month_avg - overall_mean
+        seasonal_component = d["month_avg"] - recent_overall_mean
         d["deseasonalized"] = d["market_value"] - seasonal_component
     d["deseasonalized"] = d["deseasonalized"].fillna(d["market_value"])
-    return d
+    return d.drop(columns=["month_avg"])
 
 def pct_change_between(series: pd.Series, start_date: pd.Timestamp, end_date: pd.Timestamp) -> float:
     if start_date not in series.index or end_date not in series.index:
@@ -212,12 +225,25 @@ def forecast(df: pd.DataFrame, horizon=12, seasonal_periods=12, trend="add", sea
     hist_df = pd.DataFrame({"Date": df["Month_Year"].values, "Historical": df["market_value"].values})
     return hist_df, fc_df
 
-def macd(df: pd.DataFrame, value_col: str = "market_value"):
-    s = df[value_col].ewm(span=12, adjust=False).mean()
-    l = df[value_col].ewm(span=26, adjust=False).mean()
+def macd(df: pd.DataFrame, value_col: str = "market_value", fast: int = 6, slow: int = 13, signal: int = 5):
+    """
+    12/26/9 is the standard convention for DAILY data. On monthly data that's a
+    12-month vs 26-month (2+ year) comparison, which behaves more like a multi-year
+    regime detector than a responsive momentum signal — so spans are rescaled here
+    to roughly the same ratio, sized for monthly cadence instead.
+
+    Bucketing is done on the MACD histogram as a % of the slow EMA (price level),
+    not a fixed dollar amount — a $1.50 swing is nothing for a $190 Lorcana average
+    and huge for a $28 Baseball average, so fixed absolute cutoffs would bias
+    signals toward whichever categories happen to have higher price levels.
+    """
+    s = df[value_col].ewm(span=fast, adjust=False).mean()
+    l = df[value_col].ewm(span=slow, adjust=False).mean()
     m = s - l
-    sig = m.ewm(span=9, adjust=False).mean()
-    bucket = pd.cut(m - sig, [-np.inf, -1.5, -0.5, 0, 0.5, 1.5, np.inf], labels=["High Down", "Med Down", "Low Down", "Low Up", "Med Up", "High Up"])
+    sig = m.ewm(span=signal, adjust=False).mean()
+    price_level = l.replace(0, np.nan)
+    hist_pct = ((m - sig) / price_level * 100).fillna(0)
+    bucket = pd.cut(hist_pct, [-np.inf, -3, -1, 0, 1, 3, np.inf], labels=["High Down", "Med Down", "Low Down", "Low Up", "Med Up", "High Up"])
     return m, sig, bucket
 
 def bucket_to_score(bucket_label) -> int:
@@ -243,7 +269,8 @@ def signal_badge(label: str) -> str:
     # with outlined variants for the two conditional / forward-looking calls.
     styles = {
         "BUY": f"background:{THEME['primary']} !important; color:#FFFFFF !important; border:2px solid {THEME['primary']};",
-        "SELL": f"background:#4B5563 !important; color:#FFFFFF !important; border:2px solid #4B5563;",
+        "BUY THE DIP": f"background:{THEME['primary']} !important; color:#FFFFFF !important; border:2px solid {THEME['primary']};",
+        "SELL THE PEAK": f"background:#4B5563 !important; color:#FFFFFF !important; border:2px solid #4B5563;",
         "WATCH": f"background:{THEME['secondary']} !important; color:#FFFFFF !important; border:2px solid {THEME['secondary']};",
         "CAUTION": f"background:#FFFFFF !important; color:#4B5563 !important; border:2px solid #4B5563;",
         "LONG-TERM HOLD": f"background:#FFFFFF !important; color:{THEME['primary']} !important; border:2px solid {THEME['primary']};",
@@ -252,14 +279,16 @@ def signal_badge(label: str) -> str:
     return (f"<span style='display:inline-block; padding:4px 12px; border-radius:999px; "
             f"font-weight:800; font-size:12px; letter-spacing:0.3px; {style}'>{label}</span>")
 
-def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12, hw_threshold: float = 8.0, deseason_method: str = "ratio") -> dict:
+@st.cache_data(show_spinner=False, ttl=3600)
+def compute_category_metrics(cat: str, hw_horizon: int, deseason_method: str, overextension_window: int = 6) -> dict:
     """
-    Blends three reads into one call per category:
-      - Raw MACD: short-term momentum (may include seasonal noise)
-      - Deseasonalized MACD: confirms whether that momentum survives outside normal seasonal timing
-      - Holt-Winters forecast: long-range direction, used to flag long-term-hold candidates
-        even when short-term momentum is weak or negative
+    The expensive part: fits raw + deseasonalized MACD, a Holt-Winters model, and an
+    overextension read. Cached on (category, horizon, deseasonalizing method,
+    overextension window) only — NOT on the buy/sell or overextension thresholds,
+    since those are applied afterward in compute_signal_snapshot() and are cheap to
+    recompute on every slider move without refitting anything.
     """
+    df_raw = load_data(DATA_URL)
     d = preprocess(df_raw, cat)
     m, sig, bucket = macd(d)
     raw_bucket = str(bucket.iloc[-1])
@@ -283,27 +312,19 @@ def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12
         except Exception:
             hw_pct = np.nan
 
-    long_term_up = (not pd.isna(hw_pct)) and hw_pct >= hw_threshold
-    long_term_down = (not pd.isna(hw_pct)) and hw_pct <= -hw_threshold
-
-    if raw_score >= 2 and confirmed and not long_term_down:
-        signal = "BUY"
-        why = "Momentum holds up after removing seasonality, and the long-term forecast isn't fighting it."
-    elif raw_score <= -2 and confirmed and not long_term_up:
-        signal = "SELL"
-        why = "Downside momentum holds up after removing seasonality, and the long-term forecast isn't fighting it."
-    elif raw_score <= -1 and long_term_up:
-        signal = "LONG-TERM HOLD"
-        why = f"Short-term is soft, but the {hw_horizon}-mo Holt-Winters forecast projects a meaningful recovery."
-    elif raw_score >= 1 and long_term_down:
-        signal = "CAUTION"
-        why = f"Short-term momentum is up, but the {hw_horizon}-mo forecast is turning down — don't chase this."
-    elif raw_score != 0 and not confirmed:
-        signal = "WATCH"
-        why = "Raw MACD disagrees with the deseasonalized read — likely calendar timing, not real momentum."
-    else:
-        signal = "WATCH"
-        why = "No strong short- or long-term read either way."
+    # Overextension: how far the current price sits above its OWN trailing average,
+    # independent of MACD or the forecast. MACD measures whether the trend is
+    # accelerating, not whether the price has already detached from its recent norm —
+    # a card can show strong "High Up" momentum while also being deep into blow-off-top
+    # territory (see: Umbreon ex, +55% Jan-Apr then -16% Apr-May in the carousel data).
+    # The trailing average excludes the current month so the spike doesn't inflate its
+    # own baseline.
+    overextension_pct = np.nan
+    if len(d) > overextension_window:
+        trailing_avg = float(d["market_value"].iloc[-(overextension_window + 1):-1].mean())
+        current_price = float(d["market_value"].iloc[-1])
+        if trailing_avg:
+            overextension_pct = float((current_price - trailing_avg) / trailing_avg * 100)
 
     return {
         "Category": cat,
@@ -312,10 +333,114 @@ def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12
         "Deseasonalized Bucket": ds_bucket,
         "Deseason Score": ds_score,
         "Confirmed": confirmed,
+        "HW Pct": hw_pct,
+        "Overextension %": overextension_pct,
+    }
+
+def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12, hw_threshold: float = 8.0, deseason_method: str = "ratio", overextension_window: int = 6, overextension_threshold: float = 25.0) -> dict:
+    """
+    Blends four reads into a buy-low/sell-high call per category — this is deliberately
+    a CONTRARIAN framework, not a trend-following one. A confirmed decline does NOT by
+    itself mean SELL: it only means SELL THE PEAK if price is still elevated near its
+    own recent highs (i.e. a top just started rolling over). A mid-range decline that
+    hasn't reached either extreme is WATCH, not a sell call — chasing an ongoing decline
+    lower is the opposite of what a collector buying/selling at the right time wants.
+      - Raw MACD: short-term momentum (may include seasonal noise)
+      - Deseasonalized MACD: confirms whether that momentum survives outside normal seasonal timing
+      - Overextension: price vs. its own trailing average — this is what identifies whether
+        a momentum reading is happening AT a peak/trough or somewhere in the middle
+      - Holt-Winters forecast: long-range direction, used for LONG-TERM HOLD (buy the dip on
+        a longer view) even when price hasn't technically reached "oversold" yet
+    The MACD/Holt-Winters/overextension fitting is cached separately (see
+    compute_category_metrics) — this function only applies the thresholds, so it's
+    cheap to call on every rerun.
+    df_raw is kept as a parameter for call-site compatibility, but is not used directly:
+    compute_category_metrics fetches its own (cached) copy via load_data() so its cache
+    key stays limited to hashable primitives (category, horizon, method, window).
+    """
+    metrics = compute_category_metrics(cat, hw_horizon, deseason_method, overextension_window)
+    raw_score = metrics["Raw Score"]
+    confirmed = metrics["Confirmed"]
+    hw_pct = metrics["HW Pct"]
+    overext_pct = metrics["Overextension %"]
+
+    long_term_up = (not pd.isna(hw_pct)) and hw_pct >= hw_threshold
+    long_term_down = (not pd.isna(hw_pct)) and hw_pct <= -hw_threshold
+    overextended = (not pd.isna(overext_pct)) and overext_pct >= overextension_threshold
+    oversold = (not pd.isna(overext_pct)) and overext_pct <= -overextension_threshold
+
+    if overextended and raw_score <= -1 and confirmed:
+        signal = "SELL THE PEAK"
+        why = (f"Price is still {overext_pct:.0f}% above its trailing {overextension_window}-mo average, and confirmed "
+               f"momentum has turned down — this is the pattern of a peak starting to roll over. Selling into "
+               f"remaining strength beats selling after it's already fallen.")
+    elif overextended and raw_score >= 2 and confirmed:
+        signal = "CAUTION"
+        why = (f"Momentum looks strong and the long-term forecast isn't fighting it, but price is already "
+               f"{overext_pct:.0f}% above its trailing {overextension_window}-mo average — this reads more like "
+               f"a blow-off spike than healthy momentum. Let it cool before chasing.")
+    elif oversold and raw_score >= -1:
+        signal = "BUY THE DIP"
+        why = (f"Price is {overext_pct:.0f}% below its trailing {overextension_window}-mo average, and downside "
+               f"momentum has stopped accelerating — the profile of a bottom forming, not a falling knife. "
+               f"(The long-term forecast can still lag a turn like this, so it isn't required to confirm here.)")
+    elif raw_score <= -1 and long_term_up:
+        signal = "LONG-TERM HOLD"
+        why = f"Short-term is soft and not yet at a clean technical low, but the {hw_horizon}-mo Holt-Winters forecast projects a meaningful recovery."
+    elif raw_score >= 2 and confirmed and not long_term_down and not overextended:
+        signal = "BUY"
+        why = "Momentum holds up after removing seasonality, the long-term forecast isn't fighting it, and price isn't stretched relative to its own recent average — a healthy climb, not a spike."
+    elif raw_score >= 1 and long_term_down:
+        signal = "CAUTION"
+        why = f"Short-term momentum is up, but the {hw_horizon}-mo forecast is turning down — don't chase this."
+    elif raw_score != 0 and not confirmed:
+        signal = "WATCH"
+        why = "Raw MACD disagrees with the deseasonalized read — likely calendar timing, not real momentum."
+    else:
+        signal = "WATCH"
+        why = "This isn't at either extreme — not stretched enough to call a peak, not cheap enough to call a low. Nothing actionable yet either way."
+
+    return {
+        "Category": cat,
+        "Raw Bucket": metrics["Raw Bucket"],
+        "Raw Score": raw_score,
+        "Deseasonalized Bucket": metrics["Deseasonalized Bucket"],
+        "Deseason Score": metrics["Deseason Score"],
+        "Confirmed": confirmed,
         f"{hw_horizon}-Mo HW %": hw_pct,
+        "Overextension %": overext_pct,
         "Signal": signal,
         "Why": why,
     }
+
+SNAPSHOT_PATH = "signal_snapshots.csv"
+
+def load_snapshot_history() -> pd.DataFrame:
+    """
+    Loads saved signal snapshots for week-over-week comparison.
+    NOTE: this writes to the app's local filesystem, which persists for the life of
+    the running container but is NOT guaranteed to survive a redeploy/reboot on
+    Streamlit Community Cloud. For guaranteed long-term persistence across redeploys,
+    point this at an external store instead (a Google Sheet via gspread, a small
+    hosted Postgres/SQLite, etc.) — the save/load interface here is deliberately
+    narrow (two functions, one CSV schema) so swapping the backend later is a
+    localized change, not a rewrite.
+    """
+    if os.path.exists(SNAPSHOT_PATH):
+        try:
+            hist = pd.read_csv(SNAPSHOT_PATH, parse_dates=["snapshot_date"])
+            return hist
+        except Exception:
+            return pd.DataFrame(columns=["snapshot_date", "Category", "Signal"])
+    return pd.DataFrame(columns=["snapshot_date", "Category", "Signal"])
+
+def save_snapshot(heat_df: pd.DataFrame) -> pd.DataFrame:
+    snap = heat_df[["Category", "Signal"]].copy()
+    snap["snapshot_date"] = pd.Timestamp.today().normalize()
+    history = load_snapshot_history()
+    history = pd.concat([history, snap], ignore_index=True)
+    history.to_csv(SNAPSHOT_PATH, index=False)
+    return history
 
 def apply_fig_theme(fig: go.Figure, height: int, slide_mode: bool):
     bg = THEME["card"] if not slide_mode else "#FFFFFF"
@@ -775,351 +900,6 @@ def render_liquidity_exit_monitor():
     st.download_button('Download liquidity monitor CSV', data=csv, file_name='liquidity_exit_monitor.csv', mime='text/csv', key='liq_csv_download')
 
 
-def render_episode_companion_dashboard():
-    st.markdown(f"<div class='pa-card fade-in'><h3>Episode Companion Dashboard</h3><div class='muted'>Turn each podcast episode into a live data page with thesis, charts, watchlist, and action points</div></div>", unsafe_allow_html=True)
-    st.markdown("")
-
-    c1, c2, c3 = st.columns([1.1, 1.2, 0.9])
-    with c1:
-        episode_title = st.text_input('Episode title', value='Why Pokemon Liquidity Still Matters in 2026', key='ep_title')
-    with c2:
-        episode_hook = st.text_input('Core thesis / hook', value='Collectors are paying for liquidity and confidence, not just scarcity.', key='ep_hook')
-    with c3:
-        episode_date = st.date_input('Episode date', value=pd.Timestamp.today(), key='ep_date')
-
-    d1, d2, d3 = st.columns(3)
-    with d1:
-        focus_categories = st.multiselect('Focus categories', CATEGORIES, default=['Pokemon', 'Basketball'], key='ep_cats')
-    with d2:
-        stance = st.selectbox('Episode stance', ['Bullish', 'Neutral', 'Bearish', 'Mixed'], index=3, key='ep_stance')
-    with d3:
-        call_to_action = st.text_input('Listener CTA', value='Audit your top five cards for liquidity, not just headline comp value.', key='ep_cta')
-
-    if not focus_categories:
-        st.warning('Pick at least one focus category for the episode dashboard.')
-        return
-
-    summary, last_row, comp_yoy, comp_3mo, breadth = build_market_summary(df_raw, focus_categories)
-    signal_df = compute_category_signal_table(df_raw)
-    episode_signals = signal_df[signal_df['Category'].isin(focus_categories)].copy()
-
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        kpi_card('Episode stance', stance)
-    with k2:
-        kpi_card('Focus breadth', f"{len(focus_categories)} cats")
-    with k3:
-        kpi_card('Avg YoY', fmt_pct(summary['YoY %'].mean(skipna=True)))
-    with k4:
-        kpi_card('Avg 3-Mo', fmt_pct(summary['3-Mo %'].mean(skipna=True)))
-
-    st.markdown('#### Episode Thesis Card')
-    thesis_html = f"""
-    <div class='pa-card fade-in'>
-      <div class='muted'>Episode thesis</div>
-      <div style='font-size:30px; font-weight:900; margin-top:6px; line-height:1.15;'>{episode_title}</div>
-      <div style='margin-top:10px; font-size:16px; line-height:1.5;'>{episode_hook}</div>
-      <div class='muted' style='margin-top:12px;'>Recorded for {pd.to_datetime(episode_date):%B %d, %Y} • Data through {last_row:%b %Y}</div>
-    </div>
-    """
-    st.markdown(thesis_html, unsafe_allow_html=True)
-
-    l1, l2 = st.columns([1.2, 1])
-    with l1:
-        fig = go.Figure()
-        for cat in focus_categories:
-            d = preprocess(df_raw, cat)
-            fig.add_trace(go.Scatter(x=d['Month_Year'], y=d['market_value'], mode='lines', name=cat))
-        fig.update_layout(title='Focus Category Trendlines', xaxis_title='Month', yaxis_title='Market Value')
-        apply_fig_theme(fig, height=380, slide_mode=False)
-        st.plotly_chart(fig, use_container_width=True, theme='streamlit')
-    with l2:
-        bar_df = summary.reset_index().sort_values('3-Mo %', ascending=False)
-        fig2 = go.Figure()
-        fig2.add_trace(go.Bar(x=bar_df['Category'], y=bar_df['3-Mo %'], marker=dict(color=THEME['primary']), showlegend=False))
-        fig2.add_hline(y=0, line_dash='dash', opacity=0.6, line_color=THEME['border'])
-        fig2.update_layout(title='3-Month Momentum Snapshot', xaxis_title='Category', yaxis_title='3-Mo %')
-        apply_fig_theme(fig2, height=380, slide_mode=False)
-        st.plotly_chart(fig2, use_container_width=True, theme='streamlit')
-
-    st.markdown('#### Episode Signal Table')
-    signal_view = episode_signals[['Category', 'YoY %', '3-Mo %', '6-Mo CoV %', 'Avg Corr', 'Momentum Score']].copy().sort_values('Momentum Score', ascending=False)
-    st.dataframe(signal_view.round(2), use_container_width=True, hide_index=True)
-
-    st.markdown('#### Listener Watchlist')
-    watchlist_default = pd.DataFrame([
-        {'Item': 'High-liquidity blue chip', 'Why it matters': 'Easy to exit if episode thesis is wrong', 'Priority': 'High'},
-        {'Item': 'Momentum leader', 'Why it matters': 'Confirms whether trend is broadening or fading', 'Priority': 'High'},
-        {'Item': 'Lagging category', 'Why it matters': 'Potential rotation candidate if thesis is right', 'Priority': 'Medium'},
-        {'Item': 'Sealed or alternative sleeve', 'Why it matters': 'Useful for comparing collector vs investor demand', 'Priority': 'Low'},
-    ])
-    watchlist = st.data_editor(
-        watchlist_default,
-        use_container_width=True,
-        hide_index=True,
-        num_rows='dynamic',
-        column_config={
-            'Item': st.column_config.TextColumn('Item'),
-            'Why it matters': st.column_config.TextColumn('Why it matters'),
-            'Priority': st.column_config.SelectboxColumn('Priority', options=['High', 'Medium', 'Low'])
-        },
-        key='ep_watchlist'
-    )
-
-    e1, e2 = st.columns([1.1, 1])
-    with e1:
-        st.markdown('#### Episode Run of Show')
-        run_of_show = pd.DataFrame([
-            {'Segment': 'Opening thesis', 'Talking point': episode_hook},
-            {'Segment': 'What the data says', 'Talking point': f"Average YoY is {fmt_pct(summary['YoY %'].mean(skipna=True))} across selected categories."},
-            {'Segment': 'What I am watching', 'Talking point': call_to_action},
-            {'Segment': 'Risk check', 'Talking point': 'Watch liquidity, volatility, and whether the current leader can sustain bid depth.'},
-        ])
-        st.dataframe(run_of_show, use_container_width=True, hide_index=True)
-    with e2:
-        stance_colors = {'Bullish': THEME['primary'], 'Neutral': THEME['secondary'], 'Bearish': THEME['accent_red'], 'Mixed': THEME['text']}
-        pie_values = [max(1, float(summary['3-Mo %'].gt(0).sum())), max(1, float(summary['3-Mo %'].le(0).sum()))]
-        fig3 = go.Figure(go.Pie(labels=['Positive momentum', 'Flat / negative momentum'], values=pie_values, hole=0.62, marker=dict(colors=[stance_colors.get(stance, THEME['primary']), THEME['border']])))
-        fig3.update_layout(title='Breadth Check')
-        apply_fig_theme(fig3, height=360, slide_mode=False)
-        st.plotly_chart(fig3, use_container_width=True, theme='streamlit')
-
-    st.markdown('#### Publishing Notes')
-    notes = [
-        f"Episode title: {episode_title}",
-        f"Core thesis: {episode_hook}",
-        f"Current stance: {stance}",
-        f"Listener action: {call_to_action}",
-        f"Top momentum category in this episode set: {signal_view.iloc[0]['Category'] if not signal_view.empty else 'N/A'}",
-    ]
-    for note in notes:
-        st.write(f'- {note}')
-
-    export_df = signal_view.copy()
-    export_df['Episode Title'] = episode_title
-    csv = export_df.to_csv(index=False).encode('utf-8')
-    st.download_button('Download episode dashboard CSV', data=csv, file_name='episode_companion_dashboard.csv', mime='text/csv', key='ep_csv_download')
-
-
-def render_topic_generator_dashboard():
-    st.markdown(f"<div class='pa-card fade-in'><h3>Weekly Topic Generator + Episode Dashboard</h3><div class='muted'>Pressure test a headlines-only workflow by scraping recent sports card and TCG articles, weighting repeated themes, and using Cardboard Compass data to build an episode dashboard</div></div>", unsafe_allow_html=True)
-    st.markdown('')
-
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        universe = st.selectbox('Universe', ['Sports cards', 'TCG', 'Both'], index=2, key='wt_universe')
-    with c2:
-        lookback_days = st.selectbox('Lookback window', [7, 14, 30], index=1, key='wt_lookback')
-    with c3:
-        min_keyword_hits = st.selectbox('Min repeated keyword hits', [1, 2, 3], index=1, key='wt_min_hits')
-
-    st.markdown('#### 1. Scrape recent article headlines')
-
-    import requests, re
-    from bs4 import BeautifulSoup
-    from collections import Counter
-
-    source_map = {
-        'Sports cards': [
-            ('Beckett News', 'https://www.beckett.com/news/'),
-            ('Sports Collectors Daily', 'https://www.sportscollectorsdaily.com/'),
-            ('Sports Card Portal', 'https://sportscardportal.com/news'),
-            ('Collectibles on SI', 'https://www.si.com/collectibles/industry-news'),
-        ],
-        'TCG': [
-            ('Double Holo', 'https://doubleholo.com/articles'),
-            ('Rippr Blog', 'https://rippr.app/blog'),
-            ('Monster Card Corner', 'https://monstercardcorner.co.uk/blogs/news'),
-            ('Guardian TCG', 'https://guardiantcg.app/market/movers'),
-        ],
-        'Both': [
-            ('Beckett News', 'https://www.beckett.com/news/'),
-            ('Sports Collectors Daily', 'https://www.sportscollectorsdaily.com/'),
-            ('Sports Card Portal', 'https://sportscardportal.com/news'),
-            ('Collectibles on SI', 'https://www.si.com/collectibles/industry-news'),
-            ('Double Holo', 'https://doubleholo.com/articles'),
-            ('Rippr Blog', 'https://rippr.app/blog'),
-            ('Monster Card Corner', 'https://monstercardcorner.co.uk/blogs/news'),
-            ('Guardian TCG', 'https://guardiantcg.app/market/movers'),
-        ],
-    }
-
-    stopwords = {
-        'the','and','for','with','from','this','that','into','your','what','week','july','2026','card','cards','tcg','sports',
-        'news','blog','latest','market','price','movers','daily','update','top','new','guide','dates','release','calendar'
-    }
-
-    def scrape_headlines(source_name, url):
-        try:
-            r = requests.get(url, timeout=20, headers={'User-Agent': 'Mozilla/5.0'})
-            r.raise_for_status()
-            soup = BeautifulSoup(r.text, 'html.parser')
-            seen = set()
-            rows = []
-            for tag in soup.find_all(['h1','h2','h3','a'])[:250]:
-                txt = ' '.join(tag.get_text(' ', strip=True).split())
-                if not txt or len(txt) < 25 or len(txt) > 180:
-                    continue
-                low = txt.lower()
-                if txt in seen:
-                    continue
-                if any(x in low for x in ['cookie policy','privacy policy','sign up','subscribe','advertisement']):
-                    continue
-                seen.add(txt)
-                rows.append({'Source': source_name, 'Title': txt, 'URL': url})
-            return rows[:25]
-        except Exception:
-            return []
-
-    @st.cache_data(show_spinner=False, ttl=3600)
-    def collect_articles(selected_universe):
-        rows = []
-        for src_name, src_url in source_map[selected_universe]:
-            rows.extend(scrape_headlines(src_name, src_url))
-        df = pd.DataFrame(rows)
-        if df.empty:
-            return df
-        return df.drop_duplicates(subset=['Title']).reset_index(drop=True)
-
-    articles = collect_articles(universe)
-    if articles.empty:
-        st.error('No article headlines could be scraped from the selected sources.')
-        return
-
-    st.dataframe(articles, use_container_width=True, hide_index=True)
-
-    st.markdown('#### 2. Weight repeated themes from headlines')
-
-    def tokenize(text):
-        toks = re.findall(r"[A-Za-z0-9\-']+", str(text).lower())
-        cleaned = []
-        for t in toks:
-            t = t.strip("-'")
-            if len(t) < 3 or t in stopwords or t.isdigit():
-                continue
-            cleaned.append(t)
-        return cleaned
-
-    token_counts = Counter()
-    bigram_counts = Counter()
-    for title in articles['Title']:
-        toks = tokenize(title)
-        token_counts.update(set(toks))
-        bigram_counts.update(set(zip(toks, toks[1:])))
-
-    rows = []
-    for k, v in token_counts.items():
-        if v >= min_keyword_hits:
-            rows.append({'Theme': k, 'Hits': v, 'Type': 'keyword'})
-    for (a, b), v in bigram_counts.items():
-        if v >= min_keyword_hits:
-            rows.append({'Theme': f'{a} {b}', 'Hits': v, 'Type': 'phrase'})
-    token_df = pd.DataFrame(rows)
-    if token_df.empty:
-        st.warning('Not enough repeated headline patterns to derive a topic. Lower the min hit threshold.')
-        return
-
-    token_df = token_df.sort_values(['Hits', 'Type'], ascending=[False, True]).reset_index(drop=True)
-    token_df['Weight'] = token_df['Hits'] / token_df['Hits'].sum()
-    st.dataframe(token_df.head(20), use_container_width=True, hide_index=True)
-
-    best_theme = token_df.iloc[0]['Theme']
-    related = articles[articles['Title'].str.contains(str(best_theme), case=False, na=False)].copy()
-    if related.empty:
-        related = articles.head(5).copy()
-
-    if universe == 'Sports cards':
-        default_focus = ['Baseball', 'Basketball', 'Football']
-    elif universe == 'TCG':
-        default_focus = ['Pokemon', 'Magic the Gathering']
-    else:
-        default_focus = ['Baseball', 'Basketball', 'Pokemon']
-
-    guessed_stance = 'Mixed'
-    bearish_words = ['drop', 'down', 'cold', 'losers', 'backlog', 'pressure', 'risk']
-    bullish_words = ['hot', 'gainers', 'surge', 'jump', 'boom', 'record']
-    title_blob = ' '.join(related['Title'].astype(str).tolist()).lower()
-    if any(w in title_blob for w in bullish_words):
-        guessed_stance = 'Bullish'
-    if any(w in title_blob for w in bearish_words):
-        guessed_stance = 'Bearish' if guessed_stance == 'Mixed' else 'Mixed'
-
-    st.markdown('#### 3. Hot article topic and dashboard shell')
-    suggested_title = f'Why {best_theme.title()} Is a Weekly Hobby Story Right Now'
-    suggested_hook = f'Recent article headlines repeatedly point to {best_theme} as a cross-source theme worth pressure testing against card market data.'
-
-    c1, c2 = st.columns([1.3, 1])
-    with c1:
-        st.markdown(f"<div class='pa-card fade-in'><div class='muted'>Derived hot topic from scraped headlines</div><div style='font-size:24px;font-weight:900;margin-top:4px;'>{best_theme.title()}</div><div style='margin-top:8px;'>{suggested_hook}</div><div class='muted' style='margin-top:10px;'>Universe: {universe} · Matched headlines: {len(related)}</div></div>", unsafe_allow_html=True)
-    with c2:
-        st.markdown('Supporting articles')
-        for _, row in related.head(5).iterrows():
-            st.markdown(f"- [{row['Title']}]({row['URL']})")
-
-    ep_title = st.text_input('Episode title', value=suggested_title, key='wt_ep_title')
-    ep_hook = st.text_input('Core thesis / hook', value=suggested_hook, key='wt_ep_hook')
-    ep_stance = st.selectbox('Episode stance', ['Bullish', 'Neutral', 'Bearish', 'Mixed'], index=['Bullish','Neutral','Bearish','Mixed'].index(guessed_stance), key='wt_ep_stance')
-    focus_categories = st.multiselect('Focus categories', CATEGORIES, default=[c for c in default_focus if c in CATEGORIES], key='wt_ep_cats')
-
-    if not focus_categories:
-        st.warning('Pick at least one focus category to render the episode dashboard.')
-        return
-
-    summary, last_row, comp_yoy, comp_3mo, breadth = build_market_summary(df_raw, focus_categories)
-    signal_df = compute_category_signal_table(df_raw)
-    episode_signals = signal_df[signal_df['Category'].isin(focus_categories)].copy()
-
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        kpi_card('Episode stance', ep_stance)
-    with k2:
-        kpi_card('Article matches', f"{len(related)}")
-    with k3:
-        kpi_card('Avg YoY', fmt_pct(summary['YoY %'].mean(skipna=True)))
-    with k4:
-        kpi_card('Avg 3-Mo', fmt_pct(summary['3-Mo %'].mean(skipna=True)))
-
-    thesis_html = f"""
-    <div class='pa-card fade-in'>
-      <div class='muted'>Episode thesis</div>
-      <div style='font-size:30px; font-weight:900; margin-top:6px; line-height:1.15;'>{ep_title}</div>
-      <div style='margin-top:10px; font-size:16px; line-height:1.5;'>{ep_hook}</div>
-      <div class='muted' style='margin-top:12px;'>Data through {last_row:%b %Y}</div>
-    </div>
-    """
-    st.markdown(thesis_html, unsafe_allow_html=True)
-
-    l1, l2 = st.columns([1.2, 1])
-    with l1:
-        fig = go.Figure()
-        for cat in focus_categories:
-            d = preprocess(df_raw, cat)
-            fig.add_trace(go.Scatter(x=d['Month_Year'], y=d['market_value'], mode='lines', name=cat))
-        fig.update_layout(title='Focus Category Trendlines', xaxis_title='Month', yaxis_title='Market Value')
-        apply_fig_theme(fig, height=380, slide_mode=False)
-        st.plotly_chart(fig, use_container_width=True, theme='streamlit')
-    with l2:
-        bar_df = summary.reset_index().sort_values('3-Mo %', ascending=False)
-        fig2 = go.Figure()
-        fig2.add_trace(go.Bar(x=bar_df['Category'], y=bar_df['3-Mo %'], marker=dict(color=THEME['primary']), showlegend=False))
-        fig2.add_hline(y=0, line_dash='dash', opacity=0.6, line_color=THEME['border'])
-        fig2.update_layout(title='3-Month Momentum Snapshot', xaxis_title='Category', yaxis_title='3-Mo %')
-        apply_fig_theme(fig2, height=380, slide_mode=False)
-        st.plotly_chart(fig2, use_container_width=True, theme='streamlit')
-
-    st.markdown('#### Episode Signal Table')
-    signal_view = episode_signals[['Category', 'YoY %', '3-Mo %', '6-Mo CoV %', 'Avg Corr', 'Momentum Score']].copy().sort_values('Momentum Score', ascending=False)
-    st.dataframe(signal_view.round(2), use_container_width=True, hide_index=True)
-
-    st.markdown('#### Source headlines used')
-    st.dataframe(related[['Source', 'Title', 'URL']].head(10), use_container_width=True, hide_index=True)
-
-    export_df = signal_view.copy()
-    export_df['Episode Title'] = ep_title
-    export_df['Derived Topic'] = best_theme
-    csv = export_df.to_csv(index=False).encode('utf-8')
-    st.download_button('Download headline-topic CSV', data=csv, file_name='headline_topic_episode_dashboard.csv', mime='text/csv', key='wt_csv_download')
-
 def render_portfolio_allocator():
     st.markdown(f"<div class='pa-card fade-in'><h3>Portfolio Allocator</h3><div class='muted'>Build a rules-based sports card allocation across collection buckets</div></div>", unsafe_allow_html=True)
     st.markdown("")
@@ -1475,37 +1255,42 @@ elif page == "Category Analysis":
         with b:
             show_category(cat2)
 elif page == "Market HeatMap":
-    st.markdown(f"<div class='pa-card fade-in'><h3>Market HeatMap</h3><div class='muted'>Buy / sell / watch signals — blends raw + deseasonalized MACD with a Holt-Winters long-term forecast to flag long-term-hold candidates</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='pa-card fade-in'><h3>Market HeatMap</h3><div class='muted'>Buy-the-dip / sell-the-peak signals — a confirmed decline alone doesn't mean sell; it only means SELL THE PEAK if price is still near its own highs</div></div>", unsafe_allow_html=True)
     st.markdown("")
 
     with st.expander("📖 New here? How to read these signals (with examples)", expanded=False):
         st.markdown(f"""
 <div class='pa-card fade-in' style='margin-bottom:14px;'>
-<div style='font-weight:900; font-size:16px; margin-bottom:6px;'>The three things this page is checking</div>
+<div style='font-weight:900; font-size:16px; margin-bottom:6px;'>This is built to buy low and sell high — not to follow the trend</div>
 <div style='line-height:1.6;'>
-<b>1. Momentum (raw MACD)</b> — is the category heating up or cooling off right now, based on recent price trend versus a slightly longer trend? Think of it as: "is the recent trend accelerating or decelerating?"<br><br>
-<b>2. Is that momentum real? (deseasonalized MACD)</b> — a lot of card categories spike every year around the same time (new set drops, holidays, restocks). We strip that normal seasonal pattern out and check whether the momentum still holds up. If raw momentum says "up" but the deseasonalized version doesn't agree, it's probably just the calendar — not real buying pressure.<br><br>
-<b>3. Where's it likely headed? (Holt-Winters forecast)</b> — a statistical model that projects prices forward based on historical trend + seasonal pattern. This is what catches the "short-term looks bad but the category has legs" or "short-term looks great but it won't last" situations that momentum alone would miss.
+Most momentum indicators say "it's declining, sell" and "it's rising, buy" — that's trend-following logic, and it's the opposite of what a collector usually wants, which is to sell <i>into</i> strength and buy <i>into</i> weakness. So this page checks four things and specifically uses the last one to keep a decline from being called SELL unless it's actually happening near a peak:<br><br>
+<b>1. Momentum (raw MACD)</b> — is the category heating up or cooling off right now? Is the recent trend accelerating or decelerating?<br><br>
+<b>2. Is that momentum real? (deseasonalized MACD)</b> — a lot of card categories spike every year around the same time (new set drops, holidays, restocks). We strip that out and check whether the momentum still holds up without it.<br><br>
+<b>3. Where's it likely headed? (Holt-Winters forecast)</b> — projects prices forward based on historical trend + seasonal pattern. Used mainly for LONG-TERM HOLD — catching "short-term looks bad but this has legs" before the price action alone would show it.<br><br>
+<b>4. Is it AT an extreme? (Overextension)</b> — price vs. its own trailing average. This is the key piece: it's what tells the model whether momentum is happening near a peak (sell zone), near a trough (buy zone), or somewhere in the boring middle (no clean call either way, so it says WATCH instead of guessing).
 </div>
 </div>
 """, unsafe_allow_html=True)
 
         examples = [
-            ("BUY", signal_badge("BUY"),
-             "Say a set like Prismatic Evolutions has strong raw MACD momentum, and that momentum still holds after we strip out the normal seasonal bump — so it's not just \"new set hype,\" people are actually paying up. The long-term forecast also isn't flashing a reversal.",
-             "This is the closest thing to a green light: short-term strength that isn't just calendar noise, and nothing on the horizon fighting it."),
-            ("SELL", signal_badge("SELL"),
-             "A category has been sliding for a few months, and that slide holds up even after removing normal seasonal softness (so it's not just \"post-holiday lull\") — and the long-term forecast doesn't show a rebound coming.",
-             "Weakness that's real, not seasonal, with nothing on the horizon to reverse it. Not a reason to panic-sell a personal collection, but a reason to be cautious about new buys."),
-            ("LONG-TERM HOLD", signal_badge("LONG-TERM HOLD"),
-             "A card has cooled off short-term — maybe it ran up hard after a set launch and is now pulling back, the way Umbreon ex did after its Prismatic Evolutions peak. But the long-term Holt-Winters forecast still projects meaningful upside over the next several months.",
-             "This is the \"don't panic-sell the dip\" flag. Short-term chart looks soft, but the underlying trend the model sees says this is more likely a pullback than a top."),
-            ("CAUTION", signal_badge("CAUTION"),
-             "A card just spiked — say, after a celebrity auction headline drove a halo effect across a whole card family. Momentum looks great right now, but the long-term forecast is already rolling over, because spikes like that historically fade once the headline cycle ends.",
-             "This is the \"don't chase the pump\" flag. It feels like a buy signal on the surface, but the forecast is telling you the move likely won't hold."),
+            ("SELL THE PEAK", signal_badge("SELL THE PEAK"),
+             "A card ran up hard and is still sitting well above its own trailing 6-month average, but confirmed momentum has just turned down — the first real crack after a run, the way Umbreon ex topped at $217 before sliding to $182.",
+             "This is the actual sell-at-the-peak signal: price still elevated, but starting to roll over. Selling into the tail end of strength beats waiting until it's already dropped 20%."),
+            ("BUY THE DIP", signal_badge("BUY THE DIP"),
+             "A card has fallen well below its own trailing average, but downside momentum has stopped accelerating — it's no longer making sharper lower lows, just drifting. That stabilization pattern is what separates a bottom from a falling knife.",
+             "This is the actual buy-the-low signal. Note it does NOT require the long-term forecast to already agree — Holt-Winters extrapolates the recent trend, so it structurally lags a turn. Waiting for the forecast to confirm would mean missing the bottom entirely."),
             ("WATCH", signal_badge("WATCH"),
-             "Raw MACD says a category is heating up, but the deseasonalized version says it's flat — meaning the \"heat\" is really just the normal October set-release bump that happens every year, not new demand.",
-             "Nothing wrong with this category, there's just no real signal yet — the apparent move is most likely just timing, not a trend worth acting on."),
+             "A category is down for a few months — real, confirmed weakness, not just seasonal softness — but it hasn't fallen far enough below its own average to call it cheap, and it isn't sitting near a recent high either. It's just... down, in the middle of its range.",
+             "This is the important one: the model deliberately does NOT call this a SELL. A mid-range decline with no clear peak behind it and no clear bottom yet is exactly the kind of move a buy-low/sell-high collector shouldn't chase in either direction — there's no edge here yet."),
+            ("CAUTION", signal_badge("CAUTION"),
+             "A card jumps hard — say, after a celebrity auction headline drove a halo effect across a whole card family. Momentum reads strongly positive and the forecast looks fine, but price is now 30-40%+ above its own trailing 6-month average.",
+             "This is the \"don't chase the pump\" flag — strong momentum that's already run too far to be a fresh entry. It's the mirror image of WATCH: too stretched to be a clean buy, not yet confirmed rolling over to be a clean SELL THE PEAK."),
+            ("LONG-TERM HOLD", signal_badge("LONG-TERM HOLD"),
+             "A card has cooled off short-term and hasn't technically reached \"oversold\" by the price-average check yet, but the long-term Holt-Winters forecast still projects meaningful upside over the next several months.",
+             "This is the \"don't panic-sell the dip on a personal collection\" flag — a longer-view companion to BUY THE DIP for cases the price-position check alone hasn't caught yet."),
+            ("BUY", signal_badge("BUY"),
+             "A category is climbing, that climb holds up after removing seasonality, the forecast isn't fighting it, and — critically — price hasn't run far above its own trailing average yet.",
+             "A genuine early-to-mid trend buy, not a chase. If this same momentum showed up after price had already run 30%+ above its average, it would be CAUTION instead, not this."),
         ]
         for name, badge, example, meaning in examples:
             st.markdown(f"""
@@ -1528,9 +1313,18 @@ elif page == "Market HeatMap":
         heat_deseason_method = st.radio("Deseasonalizing method", ["Ratio (multiplicative)", "Difference (additive)"], index=0, horizontal=True, key="heat_deseason_method")
     heat_method_key = "ratio" if heat_deseason_method.startswith("Ratio") else "diff"
 
+    c4, c5 = st.columns(2)
+    with c4:
+        overextension_window = st.slider("Overextension lookback (months)", 3, 12, 6, step=1, key="heat_overext_window")
+    with c5:
+        overextension_threshold = st.slider("Overextension threshold (% above trailing avg)", 10.0, 60.0, 25.0, step=1.0, key="heat_overext_threshold")
+
     with st.spinner("Scoring momentum + long-term forecasts across categories..."):
         heat_rows = [
-            compute_signal_snapshot(df_raw, c, hw_horizon=hw_horizon, hw_threshold=hw_threshold, deseason_method=heat_method_key)
+            compute_signal_snapshot(
+                df_raw, c, hw_horizon=hw_horizon, hw_threshold=hw_threshold, deseason_method=heat_method_key,
+                overextension_window=overextension_window, overextension_threshold=overextension_threshold,
+            )
             for c in CATEGORIES
         ]
     heat_df = pd.DataFrame(heat_rows)
@@ -1538,46 +1332,81 @@ elif page == "Market HeatMap":
 
     k1, k2, k3, k4 = st.columns(4)
     with k1:
-        kpi_card("Buy signals", str(int((heat_df["Signal"] == "BUY").sum())))
+        kpi_card("Buy signals", str(int(heat_df["Signal"].isin(["BUY", "BUY THE DIP"]).sum())), "BUY + BUY THE DIP")
     with k2:
-        kpi_card("Sell signals", str(int((heat_df["Signal"] == "SELL").sum())))
+        kpi_card("Sell the peak", str(int((heat_df["Signal"] == "SELL THE PEAK").sum())))
     with k3:
         kpi_card("Long-term hold candidates", str(int((heat_df["Signal"] == "LONG-TERM HOLD").sum())))
     with k4:
         kpi_card("Watch / Caution", str(int(heat_df["Signal"].isin(["WATCH", "CAUTION"]).sum())))
 
     st.markdown("")
-    st.markdown("#### Momentum vs. Long-Term Forecast")
-    color_map = {"BUY": THEME["primary"], "SELL": "#4B5563", "WATCH": THEME["secondary"], "CAUTION": "#8E8E93", "LONG-TERM HOLD": THEME["primary"]}
-    symbol_map = {"BUY": "circle", "SELL": "circle", "WATCH": "circle", "CAUTION": "circle-open", "LONG-TERM HOLD": "diamond-open"}
+    st.markdown("#### Price Position vs. Momentum")
+    color_map = {
+        "BUY": THEME["primary"], "BUY THE DIP": THEME["primary"],
+        "SELL THE PEAK": "#4B5563", "WATCH": THEME["secondary"],
+        "CAUTION": "#8E8E93", "LONG-TERM HOLD": THEME["primary"],
+    }
+    symbol_map = {
+        "BUY": "circle", "BUY THE DIP": "diamond",
+        "SELL THE PEAK": "circle", "WATCH": "circle",
+        "CAUTION": "circle-open", "LONG-TERM HOLD": "diamond-open",
+    }
     fig_q = go.Figure()
-    for sig_name in ["BUY", "LONG-TERM HOLD", "WATCH", "CAUTION", "SELL"]:
+    for sig_name in ["BUY THE DIP", "LONG-TERM HOLD", "BUY", "WATCH", "CAUTION", "SELL THE PEAK"]:
         sub = heat_df[heat_df["Signal"] == sig_name]
         if sub.empty:
             continue
         fig_q.add_trace(go.Scatter(
-            x=sub["Raw Score"], y=sub[hw_col], mode="markers+text", text=sub["Category"], textposition="top center",
-            marker=dict(size=15, color=color_map[sig_name], symbol=symbol_map[sig_name], line=dict(width=1.5, color=THEME["text"])),
+            x=sub["Overextension %"], y=sub["Raw Score"], mode="markers+text", text=sub["Category"], textposition="top center",
+            marker=dict(size=15, color=color_map.get(sig_name, THEME["muted"]), symbol=symbol_map.get(sig_name, "circle"), line=dict(width=1.5, color=THEME["text"])),
             name=sig_name,
         ))
-    fig_q.add_hline(y=hw_threshold, line_dash="dot", opacity=0.6, line_color=THEME["border"])
-    fig_q.add_hline(y=-hw_threshold, line_dash="dot", opacity=0.6, line_color=THEME["border"])
-    fig_q.add_vline(x=0, line_dash="dash", opacity=0.6, line_color=THEME["border"])
+    fig_q.add_vline(x=overextension_threshold, line_dash="dot", opacity=0.6, line_color=THEME["border"])
+    fig_q.add_vline(x=-overextension_threshold, line_dash="dot", opacity=0.6, line_color=THEME["border"])
+    fig_q.add_hline(y=0, line_dash="dash", opacity=0.6, line_color=THEME["border"])
     fig_q.update_layout(
-        title=f"Short-term MACD momentum vs. {hw_horizon}-Mo Holt-Winters forecast",
-        xaxis_title="Short-term momentum score (raw MACD bucket)",
-        yaxis_title=f"{hw_horizon}-Mo forecast change (%)",
+        title="Price Position (vs. its own trailing average) vs. Momentum",
+        xaxis_title=f"Overextension % (price vs. trailing {overextension_window}-mo average)",
+        yaxis_title="Momentum score (raw MACD bucket)",
     )
-    fig_q.update_xaxes(range=[-4, 4], tickvals=[-3, -2, -1, 1, 2, 3], ticktext=["High Down", "Med Down", "Low Down", "Low Up", "Med Up", "High Up"])
+    fig_q.update_yaxes(range=[-4, 4], tickvals=[-3, -2, -1, 1, 2, 3], ticktext=["High Down", "Med Down", "Low Down", "Low Up", "Med Up", "High Up"])
     apply_fig_theme(fig_q, height=460, slide_mode=slide_mode)
     st.plotly_chart(fig_q, use_container_width=True, theme="streamlit")
     section_card(
-        "Reading the quadrants",
-        "<div><b>Right + above dotted line:</b> momentum and long-term forecast agree bullish — BUY.</div>"
-        "<div style='margin-top:6px;'><b>Left + above dotted line:</b> short-term is soft but the long-range forecast is bullish — LONG-TERM HOLD, the accumulate-on-weakness case.</div>"
-        "<div style='margin-top:6px;'><b>Left + below dotted line:</b> momentum and forecast agree bearish — SELL.</div>"
-        "<div style='margin-top:6px;'><b>Right + below dotted line:</b> momentum is up but the forecast is rolling over — CAUTION, don't chase it.</div>"
+        "Reading this chart",
+        "<div><b>Right of the dotted line + below the dashed zero line:</b> overextended AND momentum has turned down — SELL THE PEAK.</div>"
+        "<div style='margin-top:6px;'><b>Right of the dotted line + above the zero line:</b> overextended but still climbing — CAUTION, don't chase a stretched move.</div>"
+        "<div style='margin-top:6px;'><b>Left of the dotted line + at Low Down or better:</b> oversold with downside momentum no longer accelerating — BUY THE DIP.</div>"
+        "<div style='margin-top:6px;'><b>Left of the dotted line + still deep negative momentum:</b> oversold but still falling hard — a falling knife, not a confirmed bottom yet, so this stays WATCH.</div>"
+        "<div style='margin-top:6px;'><b>Between the two dotted lines:</b> not stretched enough to call a peak, not cheap enough to call a low — WATCH, regardless of which way momentum currently points. LONG-TERM HOLD can still appear here if the long-range forecast is bullish even though price hasn't technically reached oversold.</div>"
     )
+
+    st.markdown("")
+    st.markdown("#### Signal Changes Since Last Snapshot")
+    snapshot_history = load_snapshot_history()
+    if snapshot_history.empty:
+        st.markdown("<div class='muted'>No saved snapshot yet — click \"Save today's snapshot\" below to start tracking week-over-week signal changes.</div>", unsafe_allow_html=True)
+    else:
+        last_date = snapshot_history["snapshot_date"].max()
+        last_snap = snapshot_history[snapshot_history["snapshot_date"] == last_date].set_index("Category")["Signal"]
+        changes = []
+        for _, row in heat_df.iterrows():
+            prev = last_snap.get(row["Category"])
+            if prev is not None and prev != row["Signal"]:
+                changes.append({"Category": row["Category"], "Previous": prev, "Current": row["Signal"]})
+        if changes:
+            chg_df = pd.DataFrame(changes)
+            chg_df["Previous"] = chg_df["Previous"].apply(signal_badge)
+            chg_df["Current"] = chg_df["Current"].apply(signal_badge)
+            st.markdown(f"<div class='muted'>Since {last_date:%b %d, %Y}:</div>", unsafe_allow_html=True)
+            st.markdown(chg_df.to_html(escape=False, index=False), unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='muted'>No signal changes since the last snapshot ({last_date:%b %d, %Y}).</div>", unsafe_allow_html=True)
+
+    if st.button("📌 Save today's snapshot", key="heat_save_snapshot"):
+        save_snapshot(heat_df)
+        st.success("Snapshot saved — future visits will show changes against this.")
 
     st.markdown("")
     st.markdown("#### Signal Table")
@@ -1586,11 +1415,12 @@ elif page == "Market HeatMap":
     display_df["Deseasonalized MACD"] = display_df["Deseasonalized Bucket"].apply(bucket_badge)
     display_df["Signal"] = display_df["Signal"].apply(signal_badge)
     display_df[hw_col] = display_df[hw_col].apply(lambda v: "—" if pd.isna(v) else f"{v:+.1f}%")
-    display_df = display_df[["Category", "Raw MACD", "Deseasonalized MACD", hw_col, "Signal", "Why"]]
+    display_df["Overextension %"] = display_df["Overextension %"].apply(lambda v: "—" if pd.isna(v) else f"{v:+.0f}%")
+    display_df = display_df[["Category", "Raw MACD", "Deseasonalized MACD", hw_col, "Overextension %", "Signal", "Why"]]
     st.markdown(display_df.to_html(escape=False, index=False), unsafe_allow_html=True)
 
     st.markdown("")
-    st.markdown("<div class='muted'>*Signal blends raw MACD (short-term momentum), a deseasonalized MACD (confirms the move isn't just calendar timing), and a Holt-Winters forecast (long-term direction, used to flag long-term-hold candidates). Educational analytics, not financial advice.</div>", unsafe_allow_html=True)
+    st.markdown("<div class='muted'>*Built to buy low and sell high, not to follow the trend — a confirmed decline only becomes SELL THE PEAK if price is still elevated near its own recent highs; otherwise it's WATCH. Blends raw MACD (momentum), a deseasonalized MACD (confirms it's not just calendar timing), an overextension check (price vs. its own trailing average — what actually identifies a peak or a trough), and a Holt-Winters forecast (long-term direction, used for LONG-TERM HOLD). Educational analytics, not financial advice.</div>", unsafe_allow_html=True)
 
     csv = heat_df.drop(columns=["Confirmed"]).to_csv(index=False).encode("utf-8")
     st.download_button("Download signal table CSV", data=csv, file_name="market_heatmap_signals.csv", mime="text/csv", key="heat_csv_download")
@@ -1763,7 +1593,7 @@ elif page == "Flip Forecast":
     explainer_expander(
         "this page",
         "What are the realistic odds of hitting your asking price?",
-        "This runs thousands of simulated price paths based on that category's historical average move and typical volatility, then shows the median path plus a 10th-90th percentile band — basically \"most likely outcome\" plus \"the realistic range around it.\" "
+        "This runs thousands of simulated price paths by resampling that category's own historical monthly moves — including its occasional big spikes, not just an average bell-curve move — then shows the median path plus a 10th-90th percentile band. "
         "The key number is the <b>probability of hitting your asking price</b> within your chosen time horizon, which is a much more honest answer than just eyeballing a trend line.",
         [
             {
@@ -1781,19 +1611,30 @@ elif page == "Flip Forecast":
     d = preprocess(df_raw, sim_category).sort_values("Month_Year")
     d["pct_change"] = d["market_value"].pct_change()
     d = d.dropna()
-    expected_return = d["pct_change"].mean()
-    monthly_volatility = min(max(d["pct_change"].std(), 0.01), 0.30)
+    historical_returns = d["pct_change"].to_numpy()
+    expected_return = float(np.mean(historical_returns)) if len(historical_returns) else 0.0
+    monthly_volatility = min(max(float(np.std(historical_returns)) if len(historical_returns) else 0.05, 0.01), 0.30)
     asking_price = st.number_input("Your Asking Price ($)", min_value=0.0, value=100.0, step=1.0)
     purchase_price = st.number_input("Your Purchase Price ($)", min_value=0.0, value=75.0, step=1.0)
     num_months = st.slider("Horizon (months)", 6, 36, 12, step=1)
     num_simulations = st.slider("Number of Simulations", 200, 20000, 2000, step=200)
     rng = np.random.default_rng()
+
+    # Bootstrap-resample actual historical monthly returns instead of assuming a Normal
+    # distribution — card prices have fatter tails than a bell curve (an occasional
+    # auction-headline-driven spike isn't well represented by mean/std alone). Falls
+    # back to Normal only when there's too little history to resample meaningfully.
+    use_bootstrap = len(historical_returns) >= 6
+    if use_bootstrap:
+        draws = rng.choice(historical_returns, size=(num_simulations, num_months), replace=True)
+    else:
+        draws = rng.normal(expected_return, monthly_volatility, size=(num_simulations, num_months))
+
+    start_value = float(d["market_value"].tail(3).mean())
+    growth = np.cumprod(1 + draws, axis=1)
     results = np.empty((num_simulations, num_months + 1), dtype=float)
-    results[:, 0] = float(d["market_value"].tail(3).mean())
-    for i in range(num_simulations):
-        for m in range(num_months):
-            rand_return = rng.normal(expected_return, monthly_volatility)
-            results[i, m + 1] = results[i, m] * (1 + rand_return)
+    results[:, 0] = start_value
+    results[:, 1:] = start_value * growth
     months_ahead = np.arange(num_months + 1)
     p10 = np.percentile(results, 10, axis=0)
     p50 = np.percentile(results, 50, axis=0)
@@ -1807,15 +1648,12 @@ elif page == "Flip Forecast":
     st.plotly_chart(fig, use_container_width=True, theme="streamlit")
     final_prices = results[:, -1]
     prob_hit = float(np.mean(final_prices >= asking_price) * 100)
-    st.table(pd.DataFrame({"Metric": ["Expected Return", "Monthly Volatility (capped)", "Probability Asking Price Hit"], "Value": [f"{expected_return:.2%}", f"{monthly_volatility:.2%}", f"{prob_hit:.1f}%"]}))
+    method_label = "Bootstrap (resampled from actual monthly moves)" if use_bootstrap else "Normal distribution (fallback — insufficient history to bootstrap)"
+    st.table(pd.DataFrame({"Metric": ["Simulation method", "Historical avg monthly return", "Historical monthly volatility", "Probability Asking Price Hit"], "Value": [method_label, f"{expected_return:.2%}", f"{monthly_volatility:.2%}", f"{prob_hit:.1f}%"]}))
 elif page == "Raw vs Grade Decision Engine":
     render_raw_vs_grade_engine()
 elif page == "Liquidity + Exit Risk Monitor":
     render_liquidity_exit_monitor()
-elif page == "Weekly Topic Generator":
-    render_topic_generator_dashboard()
-elif page == "Episode Companion Dashboard":
-    render_episode_companion_dashboard()
 elif page == "Portfolio Allocator":
     render_portfolio_allocator()
 
