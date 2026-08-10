@@ -340,11 +340,15 @@ def compute_category_metrics(cat: str, hw_horizon: int, deseason_method: str, ov
 def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12, hw_threshold: float = 8.0, deseason_method: str = "ratio", overextension_window: int = 6, overextension_threshold: float = 25.0) -> dict:
     """
     Blends four reads into a buy-low/sell-high call per category — this is deliberately
-    a CONTRARIAN framework, not a trend-following one. A confirmed decline does NOT by
-    itself mean SELL: it only means SELL THE PEAK if price is still elevated near its
-    own recent highs (i.e. a top just started rolling over). A mid-range decline that
-    hasn't reached either extreme is WATCH, not a sell call — chasing an ongoing decline
-    lower is the opposite of what a collector buying/selling at the right time wants.
+    a CONTRARIAN framework, not a trend-following one.
+      - A confirmed mid-range decline does NOT by itself mean sell — it means WATCH unless
+        price is still elevated near its own recent highs (overextended), in which case it's
+        SELL THE PEAK. Chasing an ongoing decline lower, with no peak behind it, is the
+        opposite of what a collector buying/selling at the right time wants.
+      - Overextension ALONE triggers SELL THE PEAK, without waiting for momentum to visibly
+        confirm-turn-down first — that confirmation is inherently lagging (by the time raw
+        MACD shows a confirmed reversal, price has usually already dropped from the top), so
+        requiring it would mean selling after the peak instead of at it.
       - Raw MACD: short-term momentum (may include seasonal noise)
       - Deseasonalized MACD: confirms whether that momentum survives outside normal seasonal timing
       - Overextension: price vs. its own trailing average — this is what identifies whether
@@ -369,16 +373,19 @@ def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12
     overextended = (not pd.isna(overext_pct)) and overext_pct >= overextension_threshold
     oversold = (not pd.isna(overext_pct)) and overext_pct <= -overextension_threshold
 
-    if overextended and raw_score <= -1 and confirmed:
+    # Overextension itself IS the sell-the-peak signal — it does NOT wait for momentum
+    # to visibly confirm-turn-down first. Waiting for that confirmation means selling
+    # only after the price has already started dropping from the top, which defeats
+    # the point of selling AT the peak rather than after it.
+    if overextended:
         signal = "SELL THE PEAK"
-        why = (f"Price is still {overext_pct:.0f}% above its trailing {overextension_window}-mo average, and confirmed "
-               f"momentum has turned down — this is the pattern of a peak starting to roll over. Selling into "
-               f"remaining strength beats selling after it's already fallen.")
-    elif overextended and raw_score >= 2 and confirmed:
-        signal = "CAUTION"
-        why = (f"Momentum looks strong and the long-term forecast isn't fighting it, but price is already "
-               f"{overext_pct:.0f}% above its trailing {overextension_window}-mo average — this reads more like "
-               f"a blow-off spike than healthy momentum. Let it cool before chasing.")
+        if raw_score <= -1 and confirmed:
+            why = (f"Price is still {overext_pct:.0f}% above its trailing {overextension_window}-mo average, and confirmed "
+                   f"momentum has already turned down — the top is visibly rolling over. Sell before it falls further.")
+        else:
+            why = (f"Price is {overext_pct:.0f}% above its trailing {overextension_window}-mo average — deep into peak "
+                   f"territory. Momentum hasn't visibly turned down yet, but waiting for that confirmation means selling "
+                   f"after the drop has already started. This flags it now, while there's still strength to sell into.")
     elif oversold and raw_score >= -1:
         signal = "BUY THE DIP"
         why = (f"Price is {overext_pct:.0f}% below its trailing {overextension_window}-mo average, and downside "
@@ -387,7 +394,7 @@ def compute_signal_snapshot(df_raw: pd.DataFrame, cat: str, hw_horizon: int = 12
     elif raw_score <= -1 and long_term_up:
         signal = "LONG-TERM HOLD"
         why = f"Short-term is soft and not yet at a clean technical low, but the {hw_horizon}-mo Holt-Winters forecast projects a meaningful recovery."
-    elif raw_score >= 2 and confirmed and not long_term_down and not overextended:
+    elif raw_score >= 2 and confirmed and not long_term_down:
         signal = "BUY"
         why = "Momentum holds up after removing seasonality, the long-term forecast isn't fighting it, and price isn't stretched relative to its own recent average — a healthy climb, not a spike."
     elif raw_score >= 1 and long_term_down:
@@ -1274,23 +1281,23 @@ Most momentum indicators say "it's declining, sell" and "it's rising, buy" — t
 
         examples = [
             ("SELL THE PEAK", signal_badge("SELL THE PEAK"),
-             "A card ran up hard and is still sitting well above its own trailing 6-month average, but confirmed momentum has just turned down — the first real crack after a run, the way Umbreon ex topped at $217 before sliding to $182.",
-             "This is the actual sell-at-the-peak signal: price still elevated, but starting to roll over. Selling into the tail end of strength beats waiting until it's already dropped 20%."),
+             "A card is 35% above its own trailing 6-month average and still climbing — momentum hasn't turned down yet, it's still reading High Up. Umbreon ex was in exactly this zone before it topped at $217 and slid to $182.",
+             "This fires on the stretch itself, not on a confirmed reversal — waiting for momentum to visibly roll over before calling it a peak means you'd only ever sell after the drop has already started. Selling into the last leg of strength, while it's still going up, is the actual sell-at-the-peak move."),
             ("BUY THE DIP", signal_badge("BUY THE DIP"),
              "A card has fallen well below its own trailing average, but downside momentum has stopped accelerating — it's no longer making sharper lower lows, just drifting. That stabilization pattern is what separates a bottom from a falling knife.",
              "This is the actual buy-the-low signal. Note it does NOT require the long-term forecast to already agree — Holt-Winters extrapolates the recent trend, so it structurally lags a turn. Waiting for the forecast to confirm would mean missing the bottom entirely."),
             ("WATCH", signal_badge("WATCH"),
              "A category is down for a few months — real, confirmed weakness, not just seasonal softness — but it hasn't fallen far enough below its own average to call it cheap, and it isn't sitting near a recent high either. It's just... down, in the middle of its range.",
-             "This is the important one: the model deliberately does NOT call this a SELL. A mid-range decline with no clear peak behind it and no clear bottom yet is exactly the kind of move a buy-low/sell-high collector shouldn't chase in either direction — there's no edge here yet."),
+             "This is the important one: the model deliberately does NOT call this a SELL. A mid-range decline with no peak behind it and no clear bottom yet is exactly the kind of move a buy-low/sell-high collector shouldn't chase in either direction — there's no edge here yet."),
             ("CAUTION", signal_badge("CAUTION"),
-             "A card jumps hard — say, after a celebrity auction headline drove a halo effect across a whole card family. Momentum reads strongly positive and the forecast looks fine, but price is now 30-40%+ above its own trailing 6-month average.",
-             "This is the \"don't chase the pump\" flag — strong momentum that's already run too far to be a fresh entry. It's the mirror image of WATCH: too stretched to be a clean buy, not yet confirmed rolling over to be a clean SELL THE PEAK."),
+             "A card has mild positive momentum and hasn't run far above its own trailing average — nowhere near overextended — but the long-term Holt-Winters forecast is already projecting a meaningful decline over the coming months.",
+             "This is a different flag than SELL THE PEAK: the price hasn't gotten stretched, but the long-range model sees trouble ahead anyway. Not a sell signal on its own, but a reason not to add to a position here."),
             ("LONG-TERM HOLD", signal_badge("LONG-TERM HOLD"),
              "A card has cooled off short-term and hasn't technically reached \"oversold\" by the price-average check yet, but the long-term Holt-Winters forecast still projects meaningful upside over the next several months.",
              "This is the \"don't panic-sell the dip on a personal collection\" flag — a longer-view companion to BUY THE DIP for cases the price-position check alone hasn't caught yet."),
             ("BUY", signal_badge("BUY"),
              "A category is climbing, that climb holds up after removing seasonality, the forecast isn't fighting it, and — critically — price hasn't run far above its own trailing average yet.",
-             "A genuine early-to-mid trend buy, not a chase. If this same momentum showed up after price had already run 30%+ above its average, it would be CAUTION instead, not this."),
+             "A genuine early-to-mid trend buy, not a chase. If this same momentum showed up after price had already run 25%+ above its trailing average, it would flip straight to SELL THE PEAK instead, not this."),
         ]
         for name, badge, example, meaning in examples:
             st.markdown(f"""
@@ -1375,11 +1382,10 @@ Most momentum indicators say "it's declining, sell" and "it's rising, buy" — t
     st.plotly_chart(fig_q, use_container_width=True, theme="streamlit")
     section_card(
         "Reading this chart",
-        "<div><b>Right of the dotted line + below the dashed zero line:</b> overextended AND momentum has turned down — SELL THE PEAK.</div>"
-        "<div style='margin-top:6px;'><b>Right of the dotted line + above the zero line:</b> overextended but still climbing — CAUTION, don't chase a stretched move.</div>"
+        "<div><b>Anywhere right of the dotted line:</b> overextended — SELL THE PEAK, whether momentum is still climbing or has already turned down. It doesn't wait for a confirmed reversal, since that confirmation only ever arrives after the price has started dropping.</div>"
         "<div style='margin-top:6px;'><b>Left of the dotted line + at Low Down or better:</b> oversold with downside momentum no longer accelerating — BUY THE DIP.</div>"
         "<div style='margin-top:6px;'><b>Left of the dotted line + still deep negative momentum:</b> oversold but still falling hard — a falling knife, not a confirmed bottom yet, so this stays WATCH.</div>"
-        "<div style='margin-top:6px;'><b>Between the two dotted lines:</b> not stretched enough to call a peak, not cheap enough to call a low — WATCH, regardless of which way momentum currently points. LONG-TERM HOLD can still appear here if the long-range forecast is bullish even though price hasn't technically reached oversold.</div>"
+        "<div style='margin-top:6px;'><b>Between the two dotted lines:</b> not stretched enough to call a peak, not cheap enough to call a low — WATCH, regardless of which way momentum currently points. LONG-TERM HOLD and CAUTION can still appear here — both depend on the long-range forecast, a third dimension this chart doesn't plot.</div>"
     )
 
     st.markdown("")
