@@ -107,7 +107,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/08/data_file_020-1.xlsx"
+DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/08/data_file_021.xlsx"
 
 @st.cache_data(show_spinner=False, ttl=3600)  # refresh hourly — previously cached forever until app reboot
 def load_data(url: str) -> pd.DataFrame:
@@ -251,6 +251,28 @@ def macd(df: pd.DataFrame, value_col: str = "market_value", fast: int = 6, slow:
 def bucket_to_score(bucket_label) -> int:
     mapping = {"High Down": -3, "Med Down": -2, "Low Down": -1, "Low Up": 1, "Med Up": 2, "High Up": 3}
     return mapping.get(str(bucket_label), 0)
+
+def add_bucket_jitter(df: pd.DataFrame, y_col: str, x_col: str, spread: float = 0.28) -> pd.DataFrame:
+    """
+    Spreads points that share the same discrete y-value (e.g. the same MACD bucket)
+    into a small vertical fan, ordered by their x-position, so they don't render as
+    an exact stack. Needed once there are enough categories that several routinely
+    land on the same bucket row — without this, scatter charts silently hide points
+    directly behind each other and their labels overlap into an unreadable smear.
+    Returns a copy with a new '_y_jittered' column; original y_col is untouched.
+    """
+    df = df.copy()
+    jittered = df[y_col].astype(float).copy()
+    for val, group in df.groupby(y_col):
+        idx = group.sort_values(x_col).index
+        n = len(idx)
+        if n <= 1:
+            continue
+        offsets = np.linspace(-spread, spread, n)
+        for off, ix in zip(offsets, idx):
+            jittered.loc[ix] = val + off
+    df["_y_jittered"] = jittered
+    return df
 
 def bucket_badge(bucket_label) -> str:
     # Red -> grey/black heat ramp: strongest up = deep red, strongest down = near-black.
@@ -1186,11 +1208,32 @@ if page == "Pancake Analytics Trading Card Market Report":
     lag_3mo = summary.sort_values("3-Mo %", ascending=True).head(2)
     leaders_text = (f"<div class='muted'><b>What the Data Says:</b> 3-Mo leaders: {', '.join(top_3mo.index)}. YoY leaders: {', '.join(top_yoy.index)}. Recent laggards: {', '.join(lag_3mo.index)}.</div>" f"<div style='margin-top:10px;'><b>What It Means:</b> The last 3 months show where momentum is concentrating. Laggards can be a buyer’s window — especially if you’re building long-term.</div>")
     left, mid, right = st.columns([2.05, 1.35, 1.35])
+    # With enough categories, permanently labeling all of them turns into an unreadable
+    # smear in this narrow a column — so only the categories already called out as
+    # leaders/laggards below get an always-visible label; every other point is still
+    # fully identifiable via hover/tap, just not cluttering the chart by default.
+    labeled_cats = set(top_3mo.index) | set(top_yoy.index) | set(lag_3mo.index)
+    summary_labeled = summary.loc[summary.index.isin(labeled_cats)]
+    summary_rest = summary.loc[~summary.index.isin(labeled_cats)]
     fig_sc = go.Figure()
-    fig_sc.add_trace(go.Scatter(x=summary["3-Mo %"], y=summary["YoY %"], mode="markers+text", text=summary.index, textposition="top center", marker=dict(size=10, color=THEME["primary"]), name="", showlegend=False))
+    fig_sc.add_trace(go.Scatter(
+        x=summary_rest["3-Mo %"], y=summary_rest["YoY %"], mode="markers", text=summary_rest.index,
+        hovertemplate="<b>%{text}</b><br>3-Mo: %{x:+.1f}%<br>YoY: %{y:+.1f}%<extra></extra>",
+        marker=dict(size=9, color=THEME["primary"], opacity=0.55), name="", showlegend=False,
+    ))
+    fig_sc.add_trace(go.Scatter(
+        x=summary_labeled["3-Mo %"], y=summary_labeled["YoY %"], mode="markers+text", text=summary_labeled.index,
+        textposition="top center", textfont=dict(size=11),
+        hovertemplate="<b>%{text}</b><br>3-Mo: %{x:+.1f}%<br>YoY: %{y:+.1f}%<extra></extra>",
+        marker=dict(size=11, color=THEME["primary"]), name="", showlegend=False,
+    ))
     fig_sc.add_hline(y=0, line_dash="dash", opacity=0.5, line_color=THEME["border"])
     fig_sc.add_vline(x=0, line_dash="dash", opacity=0.5, line_color=THEME["border"])
-    fig_sc.update_layout(title=f"Momentum Map — YoY vs 3-Mo (through {last_row:%b %Y})", xaxis_title="3-Month % change", yaxis_title="YoY % change")
+    fig_sc.update_layout(
+        title=f"Momentum Map — YoY vs 3-Mo (through {last_row:%b %Y})",
+        xaxis_title="3-Month % change", yaxis_title="YoY % change",
+        hoverlabel=dict(bgcolor=THEME["card"], font_color=THEME["text"], bordercolor=THEME["border"]),
+    )
     apply_fig_theme(fig_sc, height=360, slide_mode=slide_mode)
     top3 = top_3mo.copy()
     top3_sum = float(top3["3-Mo %"].sum()) if not top3["3-Mo %"].isna().all() else 0.0
@@ -1424,6 +1467,7 @@ Most momentum indicators say "it's declining, sell" and "it's rising, buy" — t
 
     st.markdown("")
     st.markdown("#### Price Position vs. Momentum")
+    st.markdown(f"<div class='muted' style='margin-bottom:6px;'>{len(heat_df)} categories plotted. Only BUY / BUY THE DIP / SELL THE PEAK / LONG-TERM HOLD are labeled on the chart to keep it readable — tap or hover any point for its category, or check the Signal Table below for the full list.</div>", unsafe_allow_html=True)
     color_map = {
         "BUY": THEME["primary"], "BUY THE DIP": THEME["primary"],
         "SELL THE PEAK": "#4B5563", "WATCH": THEME["secondary"],
@@ -1434,14 +1478,26 @@ Most momentum indicators say "it's declining, sell" and "it's rising, buy" — t
         "SELL THE PEAK": "circle", "WATCH": "circle",
         "CAUTION": "circle-open", "LONG-TERM HOLD": "diamond-open",
     }
+    # Labeling every category permanently breaks down once there are enough of them that
+    # several share the same discrete MACD bucket (guaranteed collisions) — so only the
+    # signals someone would actually act on get an always-visible label; everything else
+    # is still fully identifiable via hover/tap, just not cluttering the chart by default.
+    ALWAYS_LABELED = {"BUY", "BUY THE DIP", "SELL THE PEAK", "LONG-TERM HOLD"}
+    heat_df_j = add_bucket_jitter(heat_df, y_col="Raw Score", x_col="Overextension %", spread=0.28)
+
     fig_q = go.Figure()
     for sig_name in ["BUY THE DIP", "LONG-TERM HOLD", "BUY", "WATCH", "CAUTION", "SELL THE PEAK"]:
-        sub = heat_df[heat_df["Signal"] == sig_name]
+        sub = heat_df_j[heat_df_j["Signal"] == sig_name]
         if sub.empty:
             continue
+        show_labels = sig_name in ALWAYS_LABELED
         fig_q.add_trace(go.Scatter(
-            x=sub["Overextension %"], y=sub["Raw Score"], mode="markers+text", text=sub["Category"], textposition="top center",
-            marker=dict(size=15, color=color_map.get(sig_name, THEME["muted"]), symbol=symbol_map.get(sig_name, "circle"), line=dict(width=1.5, color=THEME["text"])),
+            x=sub["Overextension %"], y=sub["_y_jittered"],
+            mode="markers+text" if show_labels else "markers",
+            text=sub["Category"], textposition="top center", textfont=dict(size=11),
+            customdata=sub[["Category", "Raw Bucket"]],
+            hovertemplate="<b>%{customdata[0]}</b><br>Momentum: %{customdata[1]}<br>Overextension: %{x:+.0f}%<extra>" + sig_name + "</extra>",
+            marker=dict(size=14, color=color_map.get(sig_name, THEME["muted"]), symbol=symbol_map.get(sig_name, "circle"), line=dict(width=1.5, color=THEME["text"]), opacity=0.9),
             name=sig_name,
         ))
     fig_q.add_vline(x=overextension_threshold, line_dash="dot", opacity=0.6, line_color=THEME["border"])
@@ -1451,9 +1507,10 @@ Most momentum indicators say "it's declining, sell" and "it's rising, buy" — t
         title="Price Position (vs. its own trailing average) vs. Momentum",
         xaxis_title=f"Overextension % (price vs. trailing {overextension_window}-mo average)",
         yaxis_title="Momentum score (raw MACD bucket)",
+        hoverlabel=dict(bgcolor=THEME["card"], font_color=THEME["text"], bordercolor=THEME["border"]),
     )
     fig_q.update_yaxes(range=[-4, 4], tickvals=[-3, -2, -1, 1, 2, 3], ticktext=["High Down", "Med Down", "Low Down", "Low Up", "Med Up", "High Up"])
-    apply_fig_theme(fig_q, height=460, slide_mode=slide_mode)
+    apply_fig_theme(fig_q, height=max(460, 460 + (len(CATEGORIES) - 11) * 8), slide_mode=slide_mode)
     st.plotly_chart(fig_q, use_container_width=True, theme="streamlit")
     section_card(
         "Reading this chart",
@@ -1753,7 +1810,7 @@ elif page == "Portfolio Allocator":
 
 st.markdown("""
 ---
-**Cardboard Compass** — built by Pancake Analytics LLC 
+**Cardboard Compass** — built by Pancake Analytics LLC
 *Analytics read, not financial advice.*
 """)
 
