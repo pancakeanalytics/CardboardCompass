@@ -107,7 +107,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/08/data_file_020.xlsx"
+DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/08/data_file_020-1.xlsx"
 
 @st.cache_data(show_spinner=False, ttl=3600)  # refresh hourly — previously cached forever until app reboot
 def load_data(url: str) -> pd.DataFrame:
@@ -125,7 +125,9 @@ df_raw = load_data(DATA_URL)
 
 CATEGORIES = [
     "Fortnite", "Marvel", "Pokemon", "Star Wars", "Magic the Gathering", "Lorcana",
-    "Baseball", "Basketball", "Football", "Hockey", "Soccer"
+    "Baseball", "Basketball", "Football", "Hockey", "Soccer", "Modern One Piece",
+    "Vintage One Piece", "Disney Topps", "Disney Vintage", "Dragon Ball", "Formula 1",
+    "UFC", "Wrestling", "Yu-Gi-Oh", "Star Wars Unlimited", "Vintage Pokemon", "WNBA"
 ]
 
 DEFAULT_BUCKETS = [
