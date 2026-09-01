@@ -107,7 +107,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/08/data_file_021.xlsx"
+DATA_URL = "https://pancakebreakfaststats.com/wp-content/uploads/2026/09/data_file_022.xlsx"
 
 @st.cache_data(show_spinner=False, ttl=3600)  # refresh hourly — previously cached forever until app reboot
 def load_data(url: str) -> pd.DataFrame:
